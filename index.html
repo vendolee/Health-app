@@ -7,7 +7,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut }
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+         onAuthStateChanged, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy }
   from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
@@ -24,7 +25,9 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const provider = new GoogleAuthProvider();
+
+// セッションをローカルに永続化（ブラウザを閉じてもログイン維持）
+setPersistence(auth, browserLocalPersistence);
 
 let currentUser = null;
 let bpData = [], wtData = [];
@@ -35,37 +38,76 @@ let bpChart = null, wtChart = null;
 onAuthStateChanged(auth, async user => {
   currentUser = user;
   if (user) {
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('appScreen').style.display = 'block';
-    document.getElementById('userName').textContent = user.displayName + 'さん';
+    showApp(user);
     document.getElementById('loadingMsg').style.display = 'block';
     await loadData();
     document.getElementById('loadingMsg').style.display = 'none';
     renderBpChart();
   } else {
-    document.getElementById('loginScreen').style.display = 'flex';
-    document.getElementById('appScreen').style.display = 'none';
-    bpData = []; wtData = [];
+    showLogin();
   }
 });
 
-window.loginGoogle = async () => {
-  document.getElementById('loginError').style.display = 'none';
+function showApp(user) {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appScreen').style.display = 'block';
+  document.getElementById('userName').textContent = user.email;
+}
+
+function showLogin() {
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('appScreen').style.display = 'none';
+  bpData = []; wtData = [];
+}
+
+function setLoginError(msg) {
+  const el = document.getElementById('loginError');
+  el.textContent = msg;
+  el.style.display = msg ? 'block' : 'none';
+}
+
+// ログイン
+window.loginEmail = async () => {
+  const email = document.getElementById('inputEmail').value.trim();
+  const pass = document.getElementById('inputPass').value;
+  if (!email || !pass) { setLoginError('メールアドレスとパスワードを入力してください'); return; }
+  setLoginError('');
+  document.getElementById('loginBtn').disabled = true;
   try {
-    await signInWithPopup(auth, provider);
+    await signInWithEmailAndPassword(auth, email, pass);
   } catch(e) {
-    console.error('login error:', e);
     const msgs = {
-      'auth/popup-blocked': 'ポップアップがブロックされました。Safariの設定 → ポップアップブロックをオフにしてください。',
-      'auth/popup-closed-by-user': 'ログインがキャンセルされました。',
-      'auth/cancelled-popup-request': '',
-      'auth/network-request-failed': 'ネットワークエラーです。接続を確認してください。',
+      'auth/user-not-found': 'このメールアドレスは登録されていません',
+      'auth/wrong-password': 'パスワードが違います',
+      'auth/invalid-email': 'メールアドレスの形式が正しくありません',
+      'auth/invalid-credential': 'メールアドレスまたはパスワードが違います',
+      'auth/too-many-requests': 'ログイン試行が多すぎます。しばらく待ってください',
     };
-    const msg = msgs[e.code];
-    if (msg === '') return;
-    const el = document.getElementById('loginError');
-    el.textContent = msg || 'ログインエラー: ' + e.code;
-    el.style.display = 'block';
+    setLoginError(msgs[e.code] || 'ログインエラー: ' + e.code);
+  } finally {
+    document.getElementById('loginBtn').disabled = false;
+  }
+};
+
+// 新規登録
+window.registerEmail = async () => {
+  const email = document.getElementById('inputEmail').value.trim();
+  const pass = document.getElementById('inputPass').value;
+  if (!email || !pass) { setLoginError('メールアドレスとパスワードを入力してください'); return; }
+  if (pass.length < 6) { setLoginError('パスワードは6文字以上にしてください'); return; }
+  setLoginError('');
+  document.getElementById('registerBtn').disabled = true;
+  try {
+    await createUserWithEmailAndPassword(auth, email, pass);
+  } catch(e) {
+    const msgs = {
+      'auth/email-already-in-use': 'このメールアドレスはすでに登録されています',
+      'auth/invalid-email': 'メールアドレスの形式が正しくありません',
+      'auth/weak-password': 'パスワードが弱すぎます（6文字以上）',
+    };
+    setLoginError(msgs[e.code] || '登録エラー: ' + e.code);
+  } finally {
+    document.getElementById('registerBtn').disabled = false;
   }
 };
 
@@ -73,6 +115,7 @@ window.logout = async () => {
   if (confirm('ログアウトしますか？')) await signOut(auth);
 };
 
+// Firestore
 async function loadData() {
   if (!currentUser) return;
   const uid = currentUser.uid;
@@ -93,6 +136,7 @@ async function fsDelete(store, id) {
   await deleteDoc(doc(db, `users/${currentUser.uid}/${store}`, id));
 }
 
+// タブ
 window.switchTab = t => {
   ['bp','wt','hist'].forEach((x,i) => {
     document.getElementById('tab-'+x).style.display = x===t ? 'block' : 'none';
@@ -104,6 +148,7 @@ window.switchTab = t => {
   if (isRec) stopRec();
 };
 
+// 録音
 let recog=null, recMode=null, isRec=false;
 window.toggleRec = mode => {
   if (isRec && recMode===mode) stopRec();
@@ -392,16 +437,24 @@ function fmtD(d){return new Date(d).toLocaleDateString('ja-JP',{month:'numeric',
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f4f8;color:#2d3748;min-height:100vh}
 #loginScreen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:40px 20px;background:linear-gradient(135deg,#667eea,#764ba2)}
 #loginScreen h1{color:white;font-size:2rem;margin-bottom:8px}
-#loginScreen p{color:rgba(255,255,255,.8);font-size:.9rem;margin-bottom:40px;text-align:center}
-.login-btn{display:flex;align-items:center;gap:12px;background:white;color:#2d3748;border:none;border-radius:50px;padding:14px 28px;font-size:1rem;font-weight:600;cursor:pointer;box-shadow:0 4px 20px rgba(0,0,0,.2);touch-action:manipulation}
-.login-btn img{width:24px;height:24px}
-#loginError{display:none;color:#ffcccc;font-size:.82rem;margin-top:16px;text-align:center;max-width:300px;line-height:1.5}
+#loginScreen .subtitle{color:rgba(255,255,255,.8);font-size:.9rem;margin-bottom:32px;text-align:center}
+.login-card{background:white;border-radius:20px;padding:28px 24px;width:100%;max-width:340px;box-shadow:0 8px 32px rgba(0,0,0,.2)}
+.login-card h2{font-size:1rem;color:#2d3748;margin-bottom:18px;text-align:center}
+.login-field{margin-bottom:14px}
+.login-field label{display:block;font-size:.78rem;color:#718096;margin-bottom:4px}
+.login-field input{width:100%;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;font-size:1rem;-webkit-appearance:none;outline:none}
+.login-field input:focus{border-color:#667eea}
+.login-actions{display:flex;flex-direction:column;gap:10px;margin-top:20px}
+.btn-primary{padding:12px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer;touch-action:manipulation}
+.btn-secondary{padding:12px;background:white;color:#667eea;border:1.5px solid #667eea;border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer;touch-action:manipulation}
+.btn-primary:disabled,.btn-secondary:disabled{opacity:.6}
+#loginError{display:none;color:#e53e3e;font-size:.82rem;margin-top:12px;text-align:center;line-height:1.5}
 #appScreen{display:none}
 header{background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:16px 20px;display:flex;align-items:center;justify-content:space-between}
 header h1{font-size:1.2rem}
 .header-right{display:flex;align-items:center;gap:10px}
-.user-name{font-size:.8rem;opacity:.85}
-.logout-btn{background:rgba(255,255,255,.2);border:none;color:white;padding:6px 12px;border-radius:20px;font-size:.78rem;cursor:pointer;touch-action:manipulation}
+.user-name{font-size:.75rem;opacity:.85;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.logout-btn{background:rgba(255,255,255,.2);border:none;color:white;padding:6px 12px;border-radius:20px;font-size:.78rem;cursor:pointer;touch-action:manipulation;white-space:nowrap}
 .loading{text-align:center;color:#a0aec0;padding:20px;font-size:.9rem}
 .container{max-width:680px;margin:0 auto;padding:16px}
 .tabs{display:flex;gap:8px;margin-bottom:16px}
@@ -456,12 +509,23 @@ header h1{font-size:1.2rem}
 
 <div id="loginScreen">
   <h1>🩺 健康記録</h1>
-  <p>血圧・体重を音声で記録<br>データはクラウドに安全に保存されます</p>
-  <button class="login-btn" onclick="loginGoogle()">
-    <img src="https://www.google.com/favicon.ico" alt="Google">
-    Googleでログイン
-  </button>
-  <p id="loginError"></p>
+  <p class="subtitle">血圧・体重を音声で記録</p>
+  <div class="login-card">
+    <h2>ログイン / 新規登録</h2>
+    <div class="login-field">
+      <label>メールアドレス</label>
+      <input type="email" id="inputEmail" placeholder="example@gmail.com" autocomplete="email">
+    </div>
+    <div class="login-field">
+      <label>パスワード（6文字以上）</label>
+      <input type="password" id="inputPass" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <div class="login-actions">
+      <button class="btn-primary" id="loginBtn" onclick="loginEmail()">ログイン</button>
+      <button class="btn-secondary" id="registerBtn" onclick="registerEmail()">新規登録</button>
+    </div>
+    <p id="loginError"></p>
+  </div>
 </div>
 
 <div id="appScreen">
