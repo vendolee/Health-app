@@ -196,7 +196,6 @@ function setSt(mode, msg, type) {
   el.className = 'status'+(type?' '+type:'');
 }
 
-// 血圧＋脈拍パーサー
 function parseBP(rawText) {
   let text = rawText
     .replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0))
@@ -216,8 +215,9 @@ function parseBP(rawText) {
     if (m) { const v=parseInt(m[1]); if(v>=30&&v<=200){pulse=v; break;} }
   }
 
-  // 「180の100の80」形式（収縮期/拡張期/脈拍）
-  const m3 = text.match(/(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})/);
+  // 3つ連続パターン「180の100の84」「180-100-84」「180/100/84」
+  const sep = '(?:の|スラッシュ|[-－\\/／])';
+  const m3 = text.match(new RegExp(`(\\d{2,3})\\s*${sep}\\s*(\\d{2,3})\\s*${sep}\\s*(\\d{2,3})`));
   if (m3) {
     const s=parseInt(m3[1]), d=parseInt(m3[2]), p=parseInt(m3[3]);
     if (s>=60&&s<=250&&d>=40&&d<=150&&p>=30&&p<=200) return {sys:s, dia:d, pulse:p};
@@ -226,7 +226,7 @@ function parseBP(rawText) {
   // 従来の血圧パターン
   const pats = [
     /上[がはの]?\s*(\d{2,3})[\s\S]{0,15}?下[がはの]?\s*(\d{2,3})/,
-    /(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})/,
+    /(\d{2,3})\s*(?:の|スラッシュ|[-－\/／])\s*(\d{2,3})/,
     /最高\s*(\d{2,3})[\s\S]{0,15}?最低\s*(\d{2,3})/,
     /収縮[期]?\s*(\d{2,3})[\s\S]{0,15}?拡張[期]?\s*(\d{2,3})/,
     /(\d{2,3})\s*(?:と|で)\s*(\d{2,3})/,
@@ -242,14 +242,13 @@ function parseBP(rawText) {
   }
   return null;
 }
-         
+
 function parseWT(rawText) {
   let text = rawText.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0));
-  // 単位あり・体重明示
   const m = text.match(/(\d{2,3}(?:[.,．]\d{1,2})?)\s*(?:キロ|キログラム|kg|ｋｇ)/i)
            || text.match(/体重\s*(\d{2,3}(?:[.,．]\d{1,2})?)/);
   if (m) { const kg=parseFloat(m[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
-  // 単位なし（数字のみ）
+  // 単位なし
   const m2 = text.match(/^(\d{2,3}(?:[.,．]\d{1,2})?)$/);
   if (m2) { const kg=parseFloat(m2[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
   return null;
@@ -264,13 +263,13 @@ async function processCandidates(mode, candidates) {
       const pulseStr = bp.pulse ? '　脈拍 '+bp.pulse+' bpm' : '　（脈拍なし）';
       setSt('bp', '✅ 血圧を記録：'+bp.sys+' / '+bp.dia+' mmHg'+pulseStr, 'success');
     } else {
-      setSt('bp', '❌ 認識できませんでした。例：「上が120下が80脈拍70」', 'error');
+      setSt('bp', '❌ 認識できませんでした。例：「180-100-84」「上が120下が80」', 'error');
     }
   } else {
     let kg=null;
     for (const c of candidates) { kg=parseWT(c); if(kg!==null) break; }
     if (kg!==null) { await saveWT(kg); setSt('wt', '✅ 体重を記録：'+kg+' kg', 'success'); }
-    else setSt('wt', '❌ 認識できませんでした。例：「68キロ」', 'error');
+    else setSt('wt', '❌ 認識できませんでした。例：「68キロ」「68.5」', 'error');
   }
 }
 
@@ -593,7 +592,7 @@ header h1{font-size:1.2rem}
         <button class="mic-btn" id="micBp" onclick="toggleRec('bp')">🎤</button>
         <div class="status" id="stBp">マイクボタンを押して話しかけてください</div>
         <div class="recognized" id="recBp"></div>
-        <div class="hint">例：「上が120下が80脈拍70」「120の80心拍65」<br>脈拍は省略可</div>
+        <div class="hint">例：「180-100-84」「180の100の84」「上が120下が80脈拍70」<br>脈拍は省略可</div>
         <div class="latest" id="latBp" style="display:none">
           <div class="latest-item"><div class="val" id="lSys">--</div><div class="lbl">収縮期（上）</div></div>
           <div class="latest-item"><div class="val" id="lDia">--</div><div class="lbl">拡張期（下）</div></div>
@@ -639,7 +638,7 @@ header h1{font-size:1.2rem}
         <button class="mic-btn" id="micWt" onclick="toggleRec('wt')">🎤</button>
         <div class="status" id="stWt">マイクボタンを押して話しかけてください</div>
         <div class="recognized" id="recWt"></div>
-        <div class="hint">例：「68キロ」「68.5キログラム」「68kg」</div>
+        <div class="hint">例：「68キロ」「68.5キログラム」「68.5」</div>
         <div class="latest" id="latWt" style="display:none">
           <div class="latest-item"><div class="val" id="lKg">--</div><div class="lbl">kg</div></div>
           <div class="latest-item"><div class="val" id="lWtT">--</div><div class="lbl">記録時刻</div></div>
