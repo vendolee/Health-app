@@ -5,12 +5,396 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>健康記録アプリ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut }
+  from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
+import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy }
+  from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
+
+// ===== Firebase設定 =====
+const firebaseConfig = {
+  apiKey: "AIzaSyBCW3keg8C6P8k0St0GfTDbdHdRjKxKTo0",
+  authDomain: "health-app-vendolee.firebaseapp.com",
+  projectId: "health-app-vendolee",
+  storageBucket: "health-app-vendolee.firebasestorage.app",
+  messagingSenderId: "682309706411",
+  appId: "1:682309706411:web:6ee5e18218ab606bcdcdee"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
+
+let currentUser = null;
+let bpData = [], wtData = [];
+let bpZoom = 7, wtZoom = 7;
+let bpChart = null, wtChart = null;
+
+// ===== 認証状態監視 =====
+onAuthStateChanged(auth, async user => {
+  currentUser = user;
+  if (user) {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('appScreen').style.display = 'block';
+    document.getElementById('userName').textContent = user.displayName + 'さん';
+    await loadData();
+    renderBpChart();
+  } else {
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('appScreen').style.display = 'none';
+    bpData = []; wtData = [];
+  }
+});
+
+// ===== ログイン =====
+window.loginGoogle = async () => {
+  try {
+    await signInWithPopup(auth, provider);
+  } catch(e) {
+    // iOSではpopupが動かないことがあるのでredirectも試みる
+    const { signInWithRedirect } = await import('https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js');
+    await signInWithRedirect(auth, provider);
+  }
+};
+window.logout = async () => {
+  if(confirm('ログアウトしますか？')) await signOut(auth);
+};
+
+// ===== Firestore データ操作 =====
+async function loadData() {
+  if(!currentUser) return;
+  const uid = currentUser.uid;
+  const bpSnap = await getDocs(query(collection(db,`users/${uid}/bp`), orderBy('time')));
+  bpData = bpSnap.docs.map(d => ({id:d.id, ...d.data(), time: new Date(d.data().time)}));
+  const wtSnap = await getDocs(query(collection(db,`users/${uid}/wt`), orderBy('time')));
+  wtData = wtSnap.docs.map(d => ({id:d.id, ...d.data(), time: new Date(d.data().time)}));
+}
+
+async function fsAdd(store, record) {
+  if(!currentUser) return null;
+  const ref = await addDoc(collection(db, `users/${currentUser.uid}/${store}`), record);
+  return ref.id;
+}
+
+async function fsDelete(store, id) {
+  if(!currentUser) return;
+  await deleteDoc(doc(db, `users/${currentUser.uid}/${store}`, id));
+}
+
+// ===== タブ =====
+window.switchTab = t => {
+  ['bp','wt','hist'].forEach((x,i) => {
+    document.getElementById('tab-'+x).style.display = x===t?'block':'none';
+    document.querySelectorAll('.tab')[i].classList.toggle('active', x===t);
+  });
+  if(t==='hist') renderHistory();
+  if(t==='bp') setTimeout(()=>renderBpChart(),50);
+  if(t==='wt') setTimeout(()=>renderWtChart(),50);
+  if(isRec) stopRec();
+};
+
+// ===== 録音 =====
+let recog=null, recMode=null, isRec=false;
+window.toggleRec = mode => { if(isRec&&recMode===mode) stopRec(); else { if(isRec) stopRec(); startRec(mode); } };
+
+function startRec(mode) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR) { setSt(mode,'⚠️ 音声認識非対応。手動入力をご利用ください。','warn'); return; }
+  recMode=mode; isRec=true;
+  recog=new SR();
+  recog.lang='ja-JP'; recog.continuous=false; recog.interimResults=true; recog.maxAlternatives=5;
+  const k=mode==='bp'?'Bp':'Wt';
+  document.getElementById('mic'+k).classList.add('recording');
+  document.getElementById('mic'+k).textContent='⏹';
+  setSt(mode,'🎙 聞いています...','');
+  document.getElementById('rec'+k).textContent='';
+
+  recog.onresult = e => {
+    let finals=[], interim='';
+    for(let i=e.resultIndex;i<e.results.length;i++) {
+      if(e.results[i].isFinal) for(let j=0;j<e.results[i].length;j++) finals.push(e.results[i][j].transcript);
+      else interim+=e.results[i][0].transcript;
+    }
+    document.getElementById('rec'+k).textContent='「'+(finals[0]||interim)+'」';
+    if(finals.length) processCandidates(mode, finals);
+  };
+  recog.onerror = e => {
+    const msgs={'not-allowed':'マイクが拒否されました','no-speech':'音声未検出','network':'ネットワークエラー'};
+    setSt(mode,'❌ '+(msgs[e.error]||'エラー: '+e.error),'error'); stopRec();
+  };
+  recog.onend = () => stopRec();
+  try { recog.start(); } catch(e) { setSt(mode,'❌ 音声認識を開始できませんでした','error'); stopRec(); }
+}
+
+function stopRec() {
+  isRec=false;
+  try{recog&&recog.stop();}catch(e){}
+  recog=null;
+  ['Bp','Wt'].forEach(k=>{
+    document.getElementById('mic'+k).classList.remove('recording');
+    document.getElementById('mic'+k).textContent='🎤';
+  });
+}
+
+function setSt(mode,msg,type) {
+  const el=document.getElementById('st'+(mode==='bp'?'Bp':'Wt'));
+  el.textContent=msg; el.className='status'+(type?' '+type:'');
+}
+
+// ===== パーサー =====
+function parseBP(rawText) {
+  let text=rawText
+    .replace(/[０-９]/g,s=>String.fromCharCode(s.charCodeAt(0)-0xFEE0))
+    .replace(/[、。，．,.　]/g,' ').replace(/\s+/g,' ').trim();
+  const pats=[
+    /上[がはの]?\s*(\d{2,3})[\s\S]{0,15}?下[がはの]?\s*(\d{2,3})/,
+    /(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})/,
+    /最高\s*(\d{2,3})[\s\S]{0,15}?最低\s*(\d{2,3})/,
+    /収縮[期]?\s*(\d{2,3})[\s\S]{0,15}?拡張[期]?\s*(\d{2,3})/,
+    /(\d{2,3})\s*(?:と|で)\s*(\d{2,3})/,
+    /(\d{2,3})\s+(\d{2,3})/,
+    /^(\d{2,3})\D+(\d{2,3})$/,
+  ];
+  for(const p of pats) {
+    const m=text.match(p);
+    if(m){const s=parseInt(m[1]),d=parseInt(m[2]);if(s>=60&&s<=250&&d>=40&&d<=150)return{sys:s,dia:d};}
+  }
+  return null;
+}
+
+function parseWT(rawText) {
+  let text=rawText.replace(/[０-９]/g,s=>String.fromCharCode(s.charCodeAt(0)-0xFEE0));
+  const m=text.match(/(\d{2,3}(?:[.,．]\d{1,2})?)\s*(?:キロ|キログラム|kg|ｋｇ)/i)
+          ||text.match(/体重\s*(\d{2,3}(?:[.,．]\d{1,2})?)/);
+  if(m){const kg=parseFloat(m[1].replace(/[，．、]/g,'.'));if(kg>=20&&kg<=300)return kg;}
+  return null;
+}
+
+async function processCandidates(mode, candidates) {
+  if(mode==='bp'){
+    let bp=null;
+    for(const c of candidates){bp=parseBP(c);if(bp)break;}
+    if(bp){await saveBP(bp.sys,bp.dia);setSt('bp','✅ 血圧を記録：'+bp.sys+' / '+bp.dia+' mmHg','success');}
+    else setSt('bp','❌ 認識できませんでした。例：「上が120下が80」','error');
+  } else {
+    let kg=null;
+    for(const c of candidates){kg=parseWT(c);if(kg!==null)break;}
+    if(kg!==null){await saveWT(kg);setSt('wt','✅ 体重を記録：'+kg+' kg','success');}
+    else setSt('wt','❌ 認識できませんでした。例：「68キロ」','error');
+  }
+}
+
+// ===== データ保存 =====
+async function saveBP(sys,dia) {
+  const time = new Date();
+  const id = await fsAdd('bp', {sys, dia, time: time.toISOString()});
+  const entry = {id, sys, dia, time};
+  bpData.push(entry);
+  document.getElementById('lSys').textContent=sys;
+  document.getElementById('lDia').textContent=dia;
+  document.getElementById('lBpT').textContent=fmt(time);
+  document.getElementById('latBp').style.display='flex';
+  showSave(); renderBpChart();
+}
+
+async function saveWT(kg) {
+  const time = new Date();
+  const id = await fsAdd('wt', {kg, time: time.toISOString()});
+  const entry = {id, kg, time};
+  wtData.push(entry);
+  document.getElementById('lKg').textContent=kg;
+  document.getElementById('lWtT').textContent=fmt(time);
+  document.getElementById('latWt').style.display='flex';
+  showSave(); renderWtChart();
+}
+
+window.manualBP = async () => {
+  const s=parseInt(document.getElementById('manSys').value);
+  const d=parseInt(document.getElementById('manDia').value);
+  if(!s||!d||s<60||s>250||d<40||d>150){alert('正しい値を入力してください');return;}
+  await saveBP(s,d);
+  setSt('bp','✅ 血圧を記録：'+s+' / '+d+' mmHg','success');
+  document.getElementById('manSys').value=''; document.getElementById('manDia').value='';
+};
+
+window.manualWT = async () => {
+  const kg=parseFloat(document.getElementById('manKg').value);
+  if(!kg||kg<20||kg>300){alert('正しい体重を入力してください');return;}
+  await saveWT(kg);
+  setSt('wt','✅ 体重を記録：'+kg+' kg','success');
+  document.getElementById('manKg').value='';
+};
+
+function showSave(){
+  const el=document.getElementById('saveInd');
+  el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),1500);
+}
+
+// ===== グラフ =====
+function applySeek(data,days,seekVal){
+  if(!data.length)return data;
+  const sorted=[...data].sort((a,b)=>a.time-b.time);
+  if(days===0)return sorted;
+  const wMs=days*86400000;
+  const minT=sorted[0].time.getTime(),maxT=sorted[sorted.length-1].time.getTime();
+  const span=maxT-minT;
+  if(span<=wMs)return sorted;
+  const offset=(seekVal/100)*Math.max(0,span-wMs);
+  const from=minT+offset,to=from+wMs;
+  return sorted.filter(d=>d.time.getTime()>=from&&d.time.getTime()<=to);
+}
+
+function updateSeekUI(type,days){
+  const k=type==='bp'?'Bp':'Wt',data=type==='bp'?bpData:wtData;
+  const wrap=document.getElementById('seekWrap'+k);
+  if(!data.length||days===0){wrap.style.display='none';return;}
+  const sorted=[...data].sort((a,b)=>a.time-b.time);
+  const span=sorted.length>1?sorted[sorted.length-1].time-sorted[0].time:0;
+  if(span<=days*86400000){wrap.style.display='none';return;}
+  wrap.style.display='block'; refreshSeekLabels(type);
+}
+
+function refreshSeekLabels(type){
+  const k=type==='bp'?'Bp':'Wt';
+  const data=[...(type==='bp'?bpData:wtData)].sort((a,b)=>a.time-b.time);
+  const days=type==='bp'?bpZoom:wtZoom;
+  if(!data.length)return;
+  const sv=parseInt(document.getElementById('seek'+k).value);
+  const wMs=days*86400000;
+  const minT=data[0].time.getTime(),maxT=data[data.length-1].time.getTime();
+  const offset=(sv/100)*Math.max(0,maxT-minT-wMs);
+  const from=new Date(minT+offset),to=new Date(minT+offset+wMs);
+  document.getElementById('seekFrom'+k).textContent=fmtD(from);
+  document.getElementById('seekTo'+k).textContent=fmtD(to);
+  document.getElementById('seekLabel'+k).textContent=fmtD(from)+' ～ '+fmtD(to);
+}
+
+window.setZoom = (type,days,btn) => {
+  if(type==='bp')bpZoom=days;else wtZoom=days;
+  btn.closest('.zoom-controls').querySelectorAll('.zoom-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  updateSeekUI(type,days);
+  if(type==='bp')renderBpChart();else renderWtChart();
+};
+
+window.onSeek = type => {
+  refreshSeekLabels(type);
+  if(type==='bp')renderBpChart();else renderWtChart();
+};
+
+function renderBpChart(){
+  const empty=document.getElementById('emptyBp');
+  if(!bpData.length){empty.style.display='block';return;}
+  empty.style.display='none';
+  updateSeekUI('bp',bpZoom);
+  const vis=applySeek(bpData,bpZoom,parseInt(document.getElementById('seekBp').value));
+  const ctx=document.getElementById('chartBp').getContext('2d');
+  if(bpChart)bpChart.destroy();
+  bpChart=new Chart(ctx,{
+    type:'line',
+    data:{labels:vis.map(d=>fmtD(d.time)+' '+fmt(d.time)),datasets:[
+      {label:'収縮期（上）',data:vis.map(d=>d.sys),borderColor:'#fc5c7d',backgroundColor:'rgba(252,92,125,.1)',tension:.3,pointRadius:4,fill:false},
+      {label:'拡張期（下）',data:vis.map(d=>d.dia),borderColor:'#667eea',backgroundColor:'rgba(102,126,234,.1)',tension:.3,pointRadius:4,fill:false}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{font:{size:11}}},tooltip:{mode:'index',intersect:false}},
+      scales:{x:{ticks:{font:{size:10},maxRotation:45},grid:{display:false}},
+              y:{min:40,suggestedMax:180,ticks:{font:{size:11}},title:{display:true,text:'mmHg',font:{size:11}}}}}
+  });
+}
+
+function renderWtChart(){
+  const empty=document.getElementById('emptyWt');
+  if(!wtData.length){empty.style.display='block';return;}
+  empty.style.display='none';
+  updateSeekUI('wt',wtZoom);
+  const vis=applySeek(wtData,wtZoom,parseInt(document.getElementById('seekWt').value));
+  const ctx=document.getElementById('chartWt').getContext('2d');
+  if(wtChart)wtChart.destroy();
+  wtChart=new Chart(ctx,{
+    type:'line',
+    data:{labels:vis.map(d=>fmtD(d.time)+' '+fmt(d.time)),datasets:[
+      {label:'体重',data:vis.map(d=>d.kg),borderColor:'#38b2ac',backgroundColor:'rgba(56,178,172,.1)',tension:.3,pointRadius:4,fill:true}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{font:{size:11}}},tooltip:{mode:'index',intersect:false}},
+      scales:{x:{ticks:{font:{size:10},maxRotation:45},grid:{display:false}},
+              y:{ticks:{font:{size:11}},title:{display:true,text:'kg',font:{size:11}}}}}
+  });
+}
+
+// ===== 履歴 =====
+function renderHistory(){
+  document.getElementById('bpHist').innerHTML=bpData.length===0
+    ?'<li><div class="empty">まだ記録がありません</div></li>'
+    :[...bpData].sort((a,b)=>b.time-a.time).map(e=>`
+      <li>
+        <span class="val">${e.sys} / ${e.dia} mmHg</span>
+        <span class="time">${fmtD(e.time)} ${fmt(e.time)}</span>
+        <button class="del-btn" onclick="deleteEntry('bp','${e.id}')">🗑</button>
+      </li>`).join('');
+  document.getElementById('wtHist').innerHTML=wtData.length===0
+    ?'<li><div class="empty">まだ記録がありません</div></li>'
+    :[...wtData].sort((a,b)=>b.time-a.time).map(e=>`
+      <li>
+        <span class="val">${e.kg} kg</span>
+        <span class="time">${fmtD(e.time)} ${fmt(e.time)}</span>
+        <button class="del-btn" onclick="deleteEntry('wt','${e.id}')">🗑</button>
+      </li>`).join('');
+}
+
+window.deleteEntry = async (type, id) => {
+  if(!confirm('この記録を削除しますか？'))return;
+  await fsDelete(type, id);
+  if(type==='bp'){bpData=bpData.filter(d=>d.id!==id);renderBpChart();}
+  else{wtData=wtData.filter(d=>d.id!==id);renderWtChart();}
+  renderHistory();
+};
+
+window.clearData = async type => {
+  if(!confirm((type==='bp'?'血圧':'体重')+'の履歴をすべて削除しますか？'))return;
+  const items=type==='bp'?[...bpData]:[...wtData];
+  for(const item of items) await fsDelete(type, item.id);
+  if(type==='bp'){bpData=[];if(bpChart){bpChart.destroy();bpChart=null;}document.getElementById('emptyBp').style.display='block';}
+  else{wtData=[];if(wtChart){wtChart.destroy();wtChart=null;}document.getElementById('emptyWt').style.display='block';}
+  renderHistory();
+};
+
+window.exportCSV = type => {
+  const data=type==='bp'?bpData:wtData;
+  if(!data.length){alert('データがありません');return;}
+  const sorted=[...data].sort((a,b)=>a.time-b.time);
+  const header=type==='bp'?'日時,収縮期(mmHg),拡張期(mmHg)':'日時,体重(kg)';
+  const rows=sorted.map(e=>type==='bp'
+    ?`${e.time.toLocaleString('ja-JP')},${e.sys},${e.dia}`
+    :`${e.time.toLocaleString('ja-JP')},${e.kg}`);
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['\uFEFF'+[header,...rows].join('\n')],{type:'text/csv'}));
+  a.download=(type==='bp'?'血圧':'体重')+'_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click();
+};
+
+function fmt(d){return new Date(d).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});}
+function fmtD(d){return new Date(d).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'});}
+</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f4f8;color:#2d3748;min-height:100vh}
-header{background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:20px;text-align:center}
-header h1{font-size:1.5rem}
-header p{font-size:.85rem;opacity:.85;margin-top:4px}
+/* ログイン画面 */
+#loginScreen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:40px 20px;background:linear-gradient(135deg,#667eea,#764ba2)}
+#loginScreen h1{color:white;font-size:2rem;margin-bottom:8px}
+#loginScreen p{color:rgba(255,255,255,.8);font-size:.9rem;margin-bottom:40px}
+.login-btn{display:flex;align-items:center;gap:12px;background:white;color:#2d3748;border:none;border-radius:50px;padding:14px 28px;font-size:1rem;font-weight:600;cursor:pointer;box-shadow:0 4px 20px rgba(0,0,0,.2);touch-action:manipulation}
+.login-btn img{width:24px;height:24px}
+/* アプリ画面 */
+#appScreen{display:none}
+header{background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:16px 20px;display:flex;align-items:center;justify-content:space-between}
+header h1{font-size:1.2rem}
+.header-right{display:flex;align-items:center;gap:10px}
+.user-name{font-size:.8rem;opacity:.85}
+.logout-btn{background:rgba(255,255,255,.2);border:none;color:white;padding:6px 12px;border-radius:20px;font-size:.78rem;cursor:pointer;touch-action:manipulation}
 .container{max-width:680px;margin:0 auto;padding:16px}
 .tabs{display:flex;gap:8px;margin-bottom:16px}
 .tab{flex:1;padding:10px;border:none;border-radius:10px;font-size:.95rem;cursor:pointer;background:white;color:#718096;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.08);transition:all .2s;-webkit-appearance:none}
@@ -25,7 +409,6 @@ header p{font-size:.85rem;opacity:.85;margin-top:4px}
 .status.error{color:#e53e3e;background:#fff5f5}
 .status.warn{color:#b7791f;background:#fffbeb}
 .recognized{text-align:center;font-size:.82rem;color:#a0aec0;margin-top:6px;min-height:18px;font-style:italic;word-break:break-all}
-.debug-box{background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px;margin-top:8px;font-size:.75rem;color:#718096;word-break:break-all}
 .hint{font-size:.78rem;color:#a0aec0;text-align:center;margin-top:10px;line-height:1.7}
 .latest{display:flex;justify-content:space-around;margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0}
 .latest-item{text-align:center}
@@ -48,10 +431,11 @@ header p{font-size:.85rem;opacity:.85;margin-top:4px}
 .seek-bar{width:100%;accent-color:#667eea;height:24px}
 .seek-labels{display:flex;justify-content:space-between;font-size:.72rem;color:#a0aec0;margin-top:2px}
 .history-list{list-style:none}
-.history-list li{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid #f0f4f8;font-size:.88rem}
+.history-list li{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid #f0f4f8;font-size:.88rem;gap:8px}
 .history-list li:last-child{border-bottom:none}
-.history-list .val{font-weight:600;color:#2d3748}
+.history-list .val{font-weight:600;color:#2d3748;flex:1}
 .history-list .time{color:#a0aec0;font-size:.78rem}
+.del-btn{background:none;border:none;font-size:1rem;cursor:pointer;padding:2px 6px;touch-action:manipulation}
 .empty{text-align:center;color:#a0aec0;font-size:.88rem;padding:18px}
 .btn-row{display:flex;gap:8px;margin-top:8px;justify-content:center}
 .clear-btn{padding:8px 16px;border:1px solid #e2e8f0;border-radius:8px;background:white;color:#e53e3e;font-size:.82rem;cursor:pointer;touch-action:manipulation}
@@ -61,495 +445,139 @@ header p{font-size:.85rem;opacity:.85;margin-top:4px}
 </style>
 </head>
 <body>
-<header>
-  <h1>🩺 健康記録アプリ</h1>
-  <p>音声で血圧・体重を記録</p>
-</header>
-<div class="container">
-  <div class="tabs">
-    <button class="tab active" onclick="switchTab('bp')">🩸 血圧</button>
-    <button class="tab" onclick="switchTab('wt')">⚖️ 体重</button>
-    <button class="tab" onclick="switchTab('hist')">📋 履歴</button>
-  </div>
 
-  <div id="tab-bp">
-    <div class="card">
-      <h2>血圧を入力</h2>
-      <button class="mic-btn" id="micBp" onclick="toggleRec('bp')">🎤</button>
-      <div class="status" id="stBp">マイクボタンを押して話しかけてください</div>
-      <div class="recognized" id="recBp"></div>
-      <div class="debug-box" id="debugBp" style="display:none"></div>
-      <div class="hint">例：「上が120下が80」「120の80」「最高120最低80」</div>
-      <div class="latest" id="latBp" style="display:none">
-        <div class="latest-item"><div class="val" id="lSys">--</div><div class="lbl">収縮期（上）</div></div>
-        <div class="latest-item"><div class="val" id="lDia">--</div><div class="lbl">拡張期（下）</div></div>
-        <div class="latest-item"><div class="val" id="lBpT">--</div><div class="lbl">記録時刻</div></div>
-      </div>
-      <details class="manual-input">
-        <summary>✏️ 手動で入力する</summary>
-        <div class="manual-form">
-          <input type="number" id="manSys" placeholder="120" min="60" max="250">
-          <span style="color:#a0aec0;font-size:1.2rem">/</span>
-          <input type="number" id="manDia" placeholder="80" min="40" max="150">
-          <span style="font-size:.8rem;color:#a0aec0">mmHg</span>
-          <button onclick="manualBP()">記録</button>
+<!-- ログイン画面 -->
+<div id="loginScreen">
+  <h1>🩺 健康記録</h1>
+  <p>血圧・体重を音声で記録するアプリ</p>
+  <button class="login-btn" onclick="loginGoogle()">
+    <img src="https://www.google.com/favicon.ico" alt="Google">
+    Googleでログイン
+  </button>
+</div>
+
+<!-- アプリ画面 -->
+<div id="appScreen">
+  <header>
+    <h1>🩺 健康記録</h1>
+    <div class="header-right">
+      <span class="user-name" id="userName"></span>
+      <button class="logout-btn" onclick="logout()">ログアウト</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('bp')">🩸 血圧</button>
+      <button class="tab" onclick="switchTab('wt')">⚖️ 体重</button>
+      <button class="tab" onclick="switchTab('hist')">📋 履歴</button>
+    </div>
+
+    <!-- 血圧タブ -->
+    <div id="tab-bp">
+      <div class="card">
+        <h2>血圧を入力</h2>
+        <button class="mic-btn" id="micBp" onclick="toggleRec('bp')">🎤</button>
+        <div class="status" id="stBp">マイクボタンを押して話しかけてください</div>
+        <div class="recognized" id="recBp"></div>
+        <div class="hint">例：「上が120下が80」「120の80」「最高120最低80」</div>
+        <div class="latest" id="latBp" style="display:none">
+          <div class="latest-item"><div class="val" id="lSys">--</div><div class="lbl">収縮期（上）</div></div>
+          <div class="latest-item"><div class="val" id="lDia">--</div><div class="lbl">拡張期（下）</div></div>
+          <div class="latest-item"><div class="val" id="lBpT">--</div><div class="lbl">記録時刻</div></div>
         </div>
-      </details>
-    </div>
-    <div class="chart-card">
-      <h2>📈 血圧グラフ</h2>
-      <div class="zoom-controls">
-        <label>表示範囲：</label>
-        <button class="zoom-btn active" onclick="setZoom('bp',7,this)">7日</button>
-        <button class="zoom-btn" onclick="setZoom('bp',14,this)">14日</button>
-        <button class="zoom-btn" onclick="setZoom('bp',30,this)">30日</button>
-        <button class="zoom-btn" onclick="setZoom('bp',0,this)">全期間</button>
+        <details class="manual-input">
+          <summary>✏️ 手動で入力する</summary>
+          <div class="manual-form">
+            <input type="number" id="manSys" placeholder="120" min="60" max="250">
+            <span style="color:#a0aec0;font-size:1.2rem">/</span>
+            <input type="number" id="manDia" placeholder="80" min="40" max="150">
+            <span style="font-size:.8rem;color:#a0aec0">mmHg</span>
+            <button onclick="manualBP()">記録</button>
+          </div>
+        </details>
       </div>
-      <div class="seek-wrap" id="seekWrapBp" style="display:none">
-        <label>📍 <span id="seekLabelBp"></span></label>
-        <input type="range" class="seek-bar" id="seekBp" min="0" max="100" value="100" oninput="onSeek('bp')">
-        <div class="seek-labels"><span id="seekFromBp"></span><span id="seekToBp"></span></div>
-      </div>
-      <div class="chart-wrap"><canvas id="chartBp"></canvas></div>
-      <div class="empty" id="emptyBp">まだデータがありません</div>
-    </div>
-  </div>
-
-  <div id="tab-wt" style="display:none">
-    <div class="card">
-      <h2>体重を入力</h2>
-      <button class="mic-btn" id="micWt" onclick="toggleRec('wt')">🎤</button>
-      <div class="status" id="stWt">マイクボタンを押して話しかけてください</div>
-      <div class="recognized" id="recWt"></div>
-      <div class="hint">例：「68キロ」「68.5キログラム」「68kg」</div>
-      <div class="latest" id="latWt" style="display:none">
-        <div class="latest-item"><div class="val" id="lKg">--</div><div class="lbl">kg</div></div>
-        <div class="latest-item"><div class="val" id="lWtT">--</div><div class="lbl">記録時刻</div></div>
-      </div>
-      <details class="manual-input">
-        <summary>✏️ 手動で入力する</summary>
-        <div class="manual-form">
-          <input type="number" id="manKg" placeholder="68.5" min="20" max="300" step="0.1">
-          <span style="font-size:.8rem;color:#a0aec0">kg</span>
-          <button onclick="manualWT()">記録</button>
+      <div class="chart-card">
+        <h2>📈 血圧グラフ</h2>
+        <div class="zoom-controls">
+          <label>表示範囲：</label>
+          <button class="zoom-btn active" onclick="setZoom('bp',7,this)">7日</button>
+          <button class="zoom-btn" onclick="setZoom('bp',14,this)">14日</button>
+          <button class="zoom-btn" onclick="setZoom('bp',30,this)">30日</button>
+          <button class="zoom-btn" onclick="setZoom('bp',0,this)">全期間</button>
         </div>
-      </details>
-    </div>
-    <div class="chart-card">
-      <h2>📈 体重グラフ</h2>
-      <div class="zoom-controls">
-        <label>表示範囲：</label>
-        <button class="zoom-btn active" onclick="setZoom('wt',7,this)">7日</button>
-        <button class="zoom-btn" onclick="setZoom('wt',14,this)">14日</button>
-        <button class="zoom-btn" onclick="setZoom('wt',30,this)">30日</button>
-        <button class="zoom-btn" onclick="setZoom('wt',0,this)">全期間</button>
+        <div class="seek-wrap" id="seekWrapBp" style="display:none">
+          <label>📍 <span id="seekLabelBp"></span></label>
+          <input type="range" class="seek-bar" id="seekBp" min="0" max="100" value="100" oninput="onSeek('bp')">
+          <div class="seek-labels"><span id="seekFromBp"></span><span id="seekToBp"></span></div>
+        </div>
+        <div class="chart-wrap"><canvas id="chartBp"></canvas></div>
+        <div class="empty" id="emptyBp">まだデータがありません</div>
       </div>
-      <div class="seek-wrap" id="seekWrapWt" style="display:none">
-        <label>📍 <span id="seekLabelWt"></span></label>
-        <input type="range" class="seek-bar" id="seekWt" min="0" max="100" value="100" oninput="onSeek('wt')">
-        <div class="seek-labels"><span id="seekFromWt"></span><span id="seekToWt"></span></div>
-      </div>
-      <div class="chart-wrap"><canvas id="chartWt"></canvas></div>
-      <div class="empty" id="emptyWt">まだデータがありません</div>
     </div>
-  </div>
 
-  <div id="tab-hist" style="display:none">
-    <div class="card">
-      <h2>🩸 血圧履歴</h2>
-      <ul class="history-list" id="bpHist"></ul>
-      <div class="btn-row">
-        <button class="export-btn" onclick="exportCSV('bp')">📥 CSV</button>
-        <button class="clear-btn" onclick="clearData('bp')">🗑 削除</button>
+    <!-- 体重タブ -->
+    <div id="tab-wt" style="display:none">
+      <div class="card">
+        <h2>体重を入力</h2>
+        <button class="mic-btn" id="micWt" onclick="toggleRec('wt')">🎤</button>
+        <div class="status" id="stWt">マイクボタンを押して話しかけてください</div>
+        <div class="recognized" id="recWt"></div>
+        <div class="hint">例：「68キロ」「68.5キログラム」「68kg」</div>
+        <div class="latest" id="latWt" style="display:none">
+          <div class="latest-item"><div class="val" id="lKg">--</div><div class="lbl">kg</div></div>
+          <div class="latest-item"><div class="val" id="lWtT">--</div><div class="lbl">記録時刻</div></div>
+        </div>
+        <details class="manual-input">
+          <summary>✏️ 手動で入力する</summary>
+          <div class="manual-form">
+            <input type="number" id="manKg" placeholder="68.5" min="20" max="300" step="0.1">
+            <span style="font-size:.8rem;color:#a0aec0">kg</span>
+            <button onclick="manualWT()">記録</button>
+          </div>
+        </details>
+      </div>
+      <div class="chart-card">
+        <h2>📈 体重グラフ</h2>
+        <div class="zoom-controls">
+          <label>表示範囲：</label>
+          <button class="zoom-btn active" onclick="setZoom('wt',7,this)">7日</button>
+          <button class="zoom-btn" onclick="setZoom('wt',14,this)">14日</button>
+          <button class="zoom-btn" onclick="setZoom('wt',30,this)">30日</button>
+          <button class="zoom-btn" onclick="setZoom('wt',0,this)">全期間</button>
+        </div>
+        <div class="seek-wrap" id="seekWrapWt" style="display:none">
+          <label>📍 <span id="seekLabelWt"></span></label>
+          <input type="range" class="seek-bar" id="seekWt" min="0" max="100" value="100" oninput="onSeek('wt')">
+          <div class="seek-labels"><span id="seekFromWt"></span><span id="seekToWt"></span></div>
+        </div>
+        <div class="chart-wrap"><canvas id="chartWt"></canvas></div>
+        <div class="empty" id="emptyWt">まだデータがありません</div>
       </div>
     </div>
-    <div class="card">
-      <h2>⚖️ 体重履歴</h2>
-      <ul class="history-list" id="wtHist"></ul>
-      <div class="btn-row">
-        <button class="export-btn" onclick="exportCSV('wt')">📥 CSV</button>
-        <button class="clear-btn" onclick="clearData('wt')">🗑 削除</button>
+
+    <!-- 履歴タブ -->
+    <div id="tab-hist" style="display:none">
+      <div class="card">
+        <h2>🩸 血圧履歴</h2>
+        <ul class="history-list" id="bpHist"></ul>
+        <div class="btn-row">
+          <button class="export-btn" onclick="exportCSV('bp')">📥 CSV</button>
+          <button class="clear-btn" onclick="clearData('bp')">🗑 全削除</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>⚖️ 体重履歴</h2>
+        <ul class="history-list" id="wtHist"></ul>
+        <div class="btn-row">
+          <button class="export-btn" onclick="exportCSV('wt')">📥 CSV</button>
+          <button class="clear-btn" onclick="clearData('wt')">🗑 全削除</button>
+        </div>
       </div>
     </div>
   </div>
 </div>
-<div class="save-indicator" id="saveInd">💾 保存しました</div>
 
-<script>
-// ===== IndexedDB =====
-let db;
-function openDB(){
-  return new Promise((res,rej)=>{
-    const req=indexedDB.open('HealthDB',1);
-    req.onupgradeneeded=e=>{
-      const d=e.target.result;
-      if(!d.objectStoreNames.contains('bp')) d.createObjectStore('bp',{keyPath:'id',autoIncrement:true}).createIndex('time','time');
-      if(!d.objectStoreNames.contains('wt')) d.createObjectStore('wt',{keyPath:'id',autoIncrement:true}).createIndex('time','time');
-    };
-    req.onsuccess=e=>{db=e.target.result;res(db);};
-    req.onerror=()=>rej(req.error);
-  });
-}
-function dbAdd(store,rec){
-  return new Promise((res,rej)=>{
-    const r=db.transaction(store,'readwrite').objectStore(store).add(rec);
-    r.onsuccess=()=>res(r.result);
-    r.onerror=()=>rej(r.error);
-  });
-}
-function dbGetAll(store){
-  return new Promise((res,rej)=>{
-    const r=db.transaction(store,'readonly').objectStore(store).index('time').getAll();
-    r.onsuccess=()=>res(r.result);
-    r.onerror=()=>rej(r.error);
-  });
-}
-function dbClear(store){
-  return new Promise((res,rej)=>{
-    const r=db.transaction(store,'readwrite').objectStore(store).clear();
-    r.onsuccess=()=>res();
-    r.onerror=()=>rej(r.error);
-  });
-}
-function showSave(){
-  const el=document.getElementById('saveInd');
-  el.classList.add('show');
-  setTimeout(()=>el.classList.remove('show'),1500);
-}
-
-let bpData=[],wtData=[],bpZoom=7,wtZoom=7,bpChart=null,wtChart=null;
-
-openDB().then(async()=>{
-  bpData=(await dbGetAll('bp')).map(r=>({...r,time:new Date(r.time)}));
-  wtData=(await dbGetAll('wt')).map(r=>({...r,time:new Date(r.time)}));
-  renderBpChart();
-}).catch(console.error);
-
-// ===== タブ =====
-function switchTab(t){
-  ['bp','wt','hist'].forEach((x,i)=>{
-    document.getElementById('tab-'+x).style.display=x===t?'block':'none';
-    document.querySelectorAll('.tab')[i].classList.toggle('active',x===t);
-  });
-  if(t==='hist')renderHistory();
-  if(t==='bp')setTimeout(()=>renderBpChart(),50);
-  if(t==='wt')setTimeout(()=>renderWtChart(),50);
-  if(isRec)stopRec();
-}
-
-// ===== 録音 =====
-let recog=null,recMode=null,isRec=false;
-function toggleRec(mode){if(isRec&&recMode===mode)stopRec();else{if(isRec)stopRec();startRec(mode);}}
-
-function startRec(mode){
-  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){setSt(mode,'⚠️ 音声認識非対応。手動入力をご利用ください。','warn');return;}
-  recMode=mode;isRec=true;
-  recog=new SR();
-  recog.lang='ja-JP';
-  recog.continuous=false;
-  recog.interimResults=true;
-  recog.maxAlternatives=5;
-  const k=mode==='bp'?'Bp':'Wt';
-  document.getElementById('mic'+k).classList.add('recording');
-  document.getElementById('mic'+k).textContent='⏹';
-  setSt(mode,'🎙 聞いています...','');
-  document.getElementById('rec'+k).textContent='';
-
-  recog.onresult=e=>{
-    let finals=[],interim='';
-    for(let i=e.resultIndex;i<e.results.length;i++){
-      if(e.results[i].isFinal){
-        // 全候補を収集
-        for(let j=0;j<e.results[i].length;j++){
-          finals.push(e.results[i][j].transcript);
-        }
-      } else {
-        interim+=e.results[i][0].transcript;
-      }
-    }
-    // 途中経過を表示
-    const display=finals.length?finals[0]:interim;
-    document.getElementById('rec'+k).textContent='「'+display+'」';
-
-    // 確定テキストがあれば処理（文字列のまま渡す）
-    if(finals.length>0){
-      processCandidates(mode, finals);
-    }
-  };
-
-  recog.onerror=e=>{
-    const msgs={'not-allowed':'マイクが拒否されました','no-speech':'音声未検出','network':'ネットワークエラー'};
-    setSt(mode,'❌ '+(msgs[e.error]||'エラー: '+e.error),'error');
-    stopRec();
-  };
-  recog.onend=()=>stopRec();
-  try{recog.start();}catch(e){setSt(mode,'❌ 音声認識を開始できませんでした','error');stopRec();}
-}
-
-function stopRec(){
-  isRec=false;
-  try{recog&&recog.stop();}catch(e){}
-  recog=null;
-  ['Bp','Wt'].forEach(k=>{
-    document.getElementById('mic'+k).classList.remove('recording');
-    document.getElementById('mic'+k).textContent='🎤';
-  });
-}
-
-function setSt(mode,msg,type){
-  const el=document.getElementById('st'+(mode==='bp'?'Bp':'Wt'));
-  el.textContent=msg;
-  el.className='status'+(type?' '+type:'');
-}
-
-// ===== 血圧パーサー =====
-function parseBP(rawText){
-  let text=rawText
-    .replace(/[０-９]/g,s=>String.fromCharCode(s.charCodeAt(0)-0xFEE0))
-    .replace(/[、。，．,.　]/g,' ')
-    .replace(/\s+/g,' ').trim();
-
-  const dbg=document.getElementById('debugBp');
-  if(dbg){dbg.style.display='block';dbg.textContent='認識:「'+text+'」';}
-
-  const pats=[
-    /上[がはの]?\s*(\d{2,3})[\s\S]{0,15}?下[がはの]?\s*(\d{2,3})/,
-    /(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})/,
-    /最高\s*(\d{2,3})[\s\S]{0,15}?最低\s*(\d{2,3})/,
-    /収縮[期]?\s*(\d{2,3})[\s\S]{0,15}?拡張[期]?\s*(\d{2,3})/,
-    /(\d{2,3})\s*(?:と|で)\s*(\d{2,3})/,
-    /(\d{2,3})\s+(\d{2,3})/,
-    /^(\d{2,3})\D+(\d{2,3})$/,
-  ];
-  for(const p of pats){
-    const m=text.match(p);
-    if(m){
-      const s=parseInt(m[1]),d=parseInt(m[2]);
-      if(s>=60&&s<=250&&d>=40&&d<=150){
-        if(dbg)dbg.textContent+=' → '+s+'/'+d+' ✅';
-        return{sys:s,dia:d};
-      }
-    }
-  }
-  if(dbg)dbg.textContent+=' → マッチなし ❌';
-  return null;
-}
-
-function parseWT(rawText){
-  let text=rawText.replace(/[０-９]/g,s=>String.fromCharCode(s.charCodeAt(0)-0xFEE0));
-  const m=text.match(/(\d{2,3}(?:[.,．]\d{1,2})?)\s*(?:キロ|キログラム|kg|ｋｇ)/i)
-          ||text.match(/体重\s*(\d{2,3}(?:[.,．]\d{1,2})?)/);
-  if(m){
-    const kg=parseFloat(m[1].replace(/[，．、]/g,'.'));
-    if(kg>=20&&kg<=300)return kg;
-  }
-  return null;
-}
-
-// ===== 候補を順番に試して最初にマッチしたものを記録 =====
-async function processCandidates(mode, candidates){
-  if(mode==='bp'){
-    let bp=null;
-    for(const c of candidates){
-      bp=parseBP(c);
-      if(bp)break;
-    }
-    if(bp){
-      await saveBP(bp.sys,bp.dia);
-      setSt('bp','✅ 血圧を記録：'+bp.sys+' / '+bp.dia+' mmHg','success');
-    } else {
-      setSt('bp','❌ 認識できませんでした。例：「上が120下が80」','error');
-    }
-  } else {
-    let kg=null;
-    for(const c of candidates){
-      kg=parseWT(c);
-      if(kg!==null)break;
-    }
-    if(kg!==null){
-      await saveWT(kg);
-      setSt('wt','✅ 体重を記録：'+kg+' kg','success');
-    } else {
-      setSt('wt','❌ 認識できませんでした。例：「68キロ」','error');
-    }
-  }
-}
-
-// ===== データ保存 =====
-async function saveBP(sys,dia){
-  const entry={sys,dia,time:new Date()};
-  await dbAdd('bp',{sys:entry.sys,dia:entry.dia,time:entry.time.toISOString()});
-  bpData.push(entry);
-  document.getElementById('lSys').textContent=sys;
-  document.getElementById('lDia').textContent=dia;
-  document.getElementById('lBpT').textContent=fmt(entry.time);
-  document.getElementById('latBp').style.display='flex';
-  showSave();
-  renderBpChart();
-}
-async function saveWT(kg){
-  const entry={kg,time:new Date()};
-  await dbAdd('wt',{kg:entry.kg,time:entry.time.toISOString()});
-  wtData.push(entry);
-  document.getElementById('lKg').textContent=kg;
-  document.getElementById('lWtT').textContent=fmt(entry.time);
-  document.getElementById('latWt').style.display='flex';
-  showSave();
-  renderWtChart();
-}
-
-async function manualBP(){
-  const s=parseInt(document.getElementById('manSys').value);
-  const d=parseInt(document.getElementById('manDia').value);
-  if(!s||!d||s<60||s>250||d<40||d>150){alert('正しい値を入力してください');return;}
-  await saveBP(s,d);
-  setSt('bp','✅ 血圧を記録：'+s+' / '+d+' mmHg','success');
-  document.getElementById('manSys').value='';
-  document.getElementById('manDia').value='';
-}
-async function manualWT(){
-  const kg=parseFloat(document.getElementById('manKg').value);
-  if(!kg||kg<20||kg>300){alert('正しい体重を入力してください');return;}
-  await saveWT(kg);
-  setSt('wt','✅ 体重を記録：'+kg+' kg','success');
-  document.getElementById('manKg').value='';
-}
-
-// ===== グラフ =====
-function applySeek(data,days,seekVal){
-  if(!data.length)return data;
-  const sorted=[...data].sort((a,b)=>a.time-b.time);
-  if(days===0)return sorted;
-  const wMs=days*86400000;
-  const minT=sorted[0].time.getTime(),maxT=sorted[sorted.length-1].time.getTime();
-  const span=maxT-minT;
-  if(span<=wMs)return sorted;
-  const offset=(seekVal/100)*Math.max(0,span-wMs);
-  const from=minT+offset,to=from+wMs;
-  return sorted.filter(d=>d.time.getTime()>=from&&d.time.getTime()<=to);
-}
-function updateSeekUI(type,days){
-  const k=type==='bp'?'Bp':'Wt',data=type==='bp'?bpData:wtData;
-  const wrap=document.getElementById('seekWrap'+k);
-  if(!data.length||days===0){wrap.style.display='none';return;}
-  const sorted=[...data].sort((a,b)=>a.time-b.time);
-  const span=sorted.length>1?sorted[sorted.length-1].time-sorted[0].time:0;
-  if(span<=days*86400000){wrap.style.display='none';return;}
-  wrap.style.display='block';
-  refreshSeekLabels(type);
-}
-function refreshSeekLabels(type){
-  const k=type==='bp'?'Bp':'Wt';
-  const data=[...(type==='bp'?bpData:wtData)].sort((a,b)=>a.time-b.time);
-  const days=type==='bp'?bpZoom:wtZoom;
-  if(!data.length)return;
-  const sv=parseInt(document.getElementById('seek'+k).value);
-  const wMs=days*86400000;
-  const minT=data[0].time.getTime(),maxT=data[data.length-1].time.getTime();
-  const offset=(sv/100)*Math.max(0,maxT-minT-wMs);
-  const from=new Date(minT+offset),to=new Date(minT+offset+wMs);
-  document.getElementById('seekFrom'+k).textContent=fmtD(from);
-  document.getElementById('seekTo'+k).textContent=fmtD(to);
-  document.getElementById('seekLabel'+k).textContent=fmtD(from)+' ～ '+fmtD(to);
-}
-function setZoom(type,days,btn){
-  if(type==='bp')bpZoom=days;else wtZoom=days;
-  btn.closest('.zoom-controls').querySelectorAll('.zoom-btn').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  updateSeekUI(type,days);
-  if(type==='bp')renderBpChart();else renderWtChart();
-}
-function onSeek(type){
-  refreshSeekLabels(type);
-  if(type==='bp')renderBpChart();else renderWtChart();
-}
-function renderBpChart(){
-  const empty=document.getElementById('emptyBp');
-  if(!bpData.length){empty.style.display='block';return;}
-  empty.style.display='none';
-  updateSeekUI('bp',bpZoom);
-  const vis=applySeek(bpData,bpZoom,parseInt(document.getElementById('seekBp').value));
-  const ctx=document.getElementById('chartBp').getContext('2d');
-  if(bpChart)bpChart.destroy();
-  bpChart=new Chart(ctx,{
-    type:'line',
-    data:{
-      labels:vis.map(d=>fmtD(d.time)+' '+fmt(d.time)),
-      datasets:[
-        {label:'収縮期（上）',data:vis.map(d=>d.sys),borderColor:'#fc5c7d',backgroundColor:'rgba(252,92,125,.1)',tension:.3,pointRadius:4,fill:false},
-        {label:'拡張期（下）',data:vis.map(d=>d.dia),borderColor:'#667eea',backgroundColor:'rgba(102,126,234,.1)',tension:.3,pointRadius:4,fill:false}
-      ]
-    },
-    options:{
-      responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{position:'top',labels:{font:{size:11}}},tooltip:{mode:'index',intersect:false}},
-      scales:{
-        x:{ticks:{font:{size:10},maxRotation:45},grid:{display:false}},
-        y:{min:40,suggestedMax:180,ticks:{font:{size:11}},title:{display:true,text:'mmHg',font:{size:11}}}
-      }
-    }
-  });
-}
-function renderWtChart(){
-  const empty=document.getElementById('emptyWt');
-  if(!wtData.length){empty.style.display='block';return;}
-  empty.style.display='none';
-  updateSeekUI('wt',wtZoom);
-  const vis=applySeek(wtData,wtZoom,parseInt(document.getElementById('seekWt').value));
-  const ctx=document.getElementById('chartWt').getContext('2d');
-  if(wtChart)wtChart.destroy();
-  wtChart=new Chart(ctx,{
-    type:'line',
-    data:{
-      labels:vis.map(d=>fmtD(d.time)+' '+fmt(d.time)),
-      datasets:[
-        {label:'体重',data:vis.map(d=>d.kg),borderColor:'#38b2ac',backgroundColor:'rgba(56,178,172,.1)',tension:.3,pointRadius:4,fill:true}
-      ]
-    },
-    options:{
-      responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{position:'top',labels:{font:{size:11}}},tooltip:{mode:'index',intersect:false}},
-      scales:{
-        x:{ticks:{font:{size:10},maxRotation:45},grid:{display:false}},
-        y:{ticks:{font:{size:11}},title:{display:true,text:'kg',font:{size:11}}}
-      }
-    }
-  });
-}
-
-// ===== 履歴 =====
-function renderHistory(){
-  document.getElementById('bpHist').innerHTML=bpData.length===0
-    ?'<li><div class="empty">まだ記録がありません</div></li>'
-    :[...bpData].sort((a,b)=>b.time-a.time).map(e=>`<li><span class="val">${e.sys} / ${e.dia} mmHg</span><span class="time">${fmtD(e.time)} ${fmt(e.time)}</span></li>`).join('');
-  document.getElementById('wtHist').innerHTML=wtData.length===0
-    ?'<li><div class="empty">まだ記録がありません</div></li>'
-    :[...wtData].sort((a,b)=>b.time-a.time).map(e=>`<li><span class="val">${e.kg} kg</span><span class="time">${fmtD(e.time)} ${fmt(e.time)}</span></li>`).join('');
-}
-async function clearData(type){
-  if(!confirm((type==='bp'?'血圧':'体重')+'の履歴をすべて削除しますか？'))return;
-  await dbClear(type);
-  if(type==='bp'){bpData=[];if(bpChart){bpChart.destroy();bpChart=null;}document.getElementById('emptyBp').style.display='block';}
-  else{wtData=[];if(wtChart){wtChart.destroy();wtChart=null;}document.getElementById('emptyWt').style.display='block';}
-  renderHistory();
-}
-function exportCSV(type){
-  const data=type==='bp'?bpData:wtData;
-  if(!data.length){alert('データがありません');return;}
-  const sorted=[...data].sort((a,b)=>a.time-b.time);
-  const header=type==='bp'?'日時,収縮期(mmHg),拡張期(mmHg)':'日時,体重(kg)';
-  const rows=sorted.map(e=>type==='bp'
-    ?`${e.time.toLocaleString('ja-JP')},${e.sys},${e.dia}`
-    :`${e.time.toLocaleString('ja-JP')},${e.kg}`);
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob(['\uFEFF'+[header,...rows].join('\n')],{type:'text/csv'}));
-  a.download=(type==='bp'?'血圧':'体重')+'_'+new Date().toISOString().slice(0,10)+'.csv';
-  a.click();
-}
-
-function fmt(d){return new Date(d).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});}
-function fmtD(d){return new Date(d).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'});}
-</script>
+<div class="save-indicator" id="saveInd">☁️ 保存しました</div>
 </body>
 </html>
