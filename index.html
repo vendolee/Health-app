@@ -33,8 +33,31 @@ let bpChart = null, wtChart = null;
 
 // リダイレクト結果を受け取る
 getRedirectResult(auth).then(result => {
-  if (result?.user) console.log('redirect login success');
-}).catch(e => console.error('redirect error:', e));
+  if (result?.user) {
+    console.log('redirect login success');
+  }
+}).catch(e => {
+  console.error('redirect error:', e);
+  // 画面にエラーを表示
+  const msg = document.getElementById('loginError');
+  if (msg) {
+    msg.textContent = 'エラー: ' + e.code + ' / ' + e.message;
+    msg.style.display = 'block';
+  }
+});
+
+window.loginGoogle = async () => {
+  try {
+    document.getElementById('loginError').style.display = 'none';
+    await signInWithRedirect(auth, provider);
+  } catch(e) {
+    const msg = document.getElementById('loginError');
+    if (msg) {
+      msg.textContent = 'ログインエラー: ' + e.code;
+      msg.style.display = 'block';
+    }
+  }
+};
 
 // 認証状態監視
 onAuthStateChanged(auth, async user => {
@@ -458,9 +481,10 @@ header h1{font-size:1.2rem}
   <h1>🩺 健康記録</h1>
   <p>血圧・体重を音声で記録<br>データはクラウドに安全に保存されます</p>
   <button class="login-btn" onclick="loginGoogle()">
-    <img src="https://www.google.com/favicon.ico" alt="Google">
-    Googleでログイン
-  </button>
+  <img src="https://www.google.com/favicon.ico" alt="Google">
+  Googleでログイン
+</button>
+<p id="loginError" style="display:none;color:#ffcccc;font-size:.8rem;margin-top:16px;text-align:center;max-width:300px"></p>
 </div>
 
 <div id="appScreen">
