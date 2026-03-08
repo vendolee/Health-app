@@ -7,7 +7,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
-import { getAuth, signInWithRedirect, getRedirectResult, GoogleAuthProvider, onAuthStateChanged, signOut }
+import { getAuth, signInWithRedirect, signInWithPopup, getRedirectResult,
+         GoogleAuthProvider, onAuthStateChanged, signOut }
   from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy }
   from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
@@ -31,33 +32,17 @@ let bpData = [], wtData = [];
 let bpZoom = 7, wtZoom = 7;
 let bpChart = null, wtChart = null;
 
+// iPad判定
+const isIPad = /iPad/.test(navigator.userAgent) ||
+               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
 // リダイレクト結果を受け取る
 getRedirectResult(auth).then(result => {
-  if (result?.user) {
-    console.log('redirect login success');
-  }
+  if (result?.user) console.log('redirect login success');
 }).catch(e => {
   console.error('redirect error:', e);
-  // 画面にエラーを表示
-  const msg = document.getElementById('loginError');
-  if (msg) {
-    msg.textContent = 'エラー: ' + e.code + ' / ' + e.message;
-    msg.style.display = 'block';
-  }
+  showLoginError(e.code);
 });
-
-window.loginGoogle = async () => {
-  try {
-    document.getElementById('loginError').style.display = 'none';
-    await signInWithRedirect(auth, provider);
-  } catch(e) {
-    const msg = document.getElementById('loginError');
-    if (msg) {
-      msg.textContent = 'ログインエラー: ' + e.code;
-      msg.style.display = 'block';
-    }
-  }
-};
 
 // 認証状態監視
 onAuthStateChanged(auth, async user => {
@@ -77,12 +62,39 @@ onAuthStateChanged(auth, async user => {
   }
 });
 
+function showLoginError(code) {
+  const el = document.getElementById('loginError');
+  if (!el) return;
+  const msgs = {
+    'auth/popup-blocked': 'ポップアップがブロックされました。Safariの設定でポップアップを許可してください。',
+    'auth/popup-closed-by-user': 'ログインがキャンセルされました。',
+    'auth/cancelled-popup-request': '',
+    'auth/network-request-failed': 'ネットワークエラーです。接続を確認してください。',
+  };
+  const msg = msgs[code];
+  if (msg === '') return;
+  el.textContent = msg || 'ログインエラー: ' + code;
+  el.style.display = 'block';
+}
+
 window.loginGoogle = async () => {
+  document.getElementById('loginError').style.display = 'none';
   try {
-    await signInWithRedirect(auth, provider);
+    if (isIPad) {
+      await signInWithPopup(auth, provider);
+    } else {
+      await signInWithRedirect(auth, provider);
+    }
   } catch(e) {
-    console.error('login error:', e);
-    alert('ログインに失敗しました。もう一度お試しください。');
+    if (e.code === 'auth/popup-blocked' || e.code === 'auth/popup-closed-by-user') {
+      try {
+        await signInWithRedirect(auth, provider);
+      } catch(e2) {
+        showLoginError(e2.code);
+      }
+    } else {
+      showLoginError(e.code);
+    }
   }
 };
 
@@ -222,7 +234,6 @@ async function processCandidates(mode, candidates) {
   }
 }
 
-// データ保存
 async function saveBP(sys, dia) {
   const time = new Date();
   const id = await fsAdd('bp', {sys, dia, time: time.toISOString()});
@@ -357,7 +368,6 @@ function renderWtChart(){
   });
 }
 
-// 履歴
 function renderHistory(){
   document.getElementById('bpHist').innerHTML=bpData.length===0
     ?'<li><div class="empty">まだ記録がありません</div></li>'
@@ -388,7 +398,7 @@ window.deleteEntry = async (type,id) => {
 window.clearData = async type => {
   if(!confirm((type==='bp'?'血圧':'体重')+'の履歴をすべて削除しますか？'))return;
   const items=type==='bp'?[...bpData]:[...wtData];
-  for(const item of items)await fsDelete(type,item.id);
+  for(const item of items) await fsDelete(type,item.id);
   if(type==='bp'){bpData=[];if(bpChart){bpChart.destroy();bpChart=null;}document.getElementById('emptyBp').style.display='block';}
   else{wtData=[];if(wtChart){wtChart.destroy();wtChart=null;}document.getElementById('emptyWt').style.display='block';}
   renderHistory();
@@ -419,6 +429,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 #loginScreen p{color:rgba(255,255,255,.8);font-size:.9rem;margin-bottom:40px;text-align:center}
 .login-btn{display:flex;align-items:center;gap:12px;background:white;color:#2d3748;border:none;border-radius:50px;padding:14px 28px;font-size:1rem;font-weight:600;cursor:pointer;box-shadow:0 4px 20px rgba(0,0,0,.2);touch-action:manipulation}
 .login-btn img{width:24px;height:24px}
+#loginError{display:none;color:#ffcccc;font-size:.82rem;margin-top:16px;text-align:center;max-width:300px;line-height:1.5}
 #appScreen{display:none}
 header{background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:16px 20px;display:flex;align-items:center;justify-content:space-between}
 header h1{font-size:1.2rem}
@@ -481,10 +492,10 @@ header h1{font-size:1.2rem}
   <h1>🩺 健康記録</h1>
   <p>血圧・体重を音声で記録<br>データはクラウドに安全に保存されます</p>
   <button class="login-btn" onclick="loginGoogle()">
-  <img src="https://www.google.com/favicon.ico" alt="Google">
-  Googleでログイン
-</button>
-<p id="loginError" style="display:none;color:#ffcccc;font-size:.8rem;margin-top:16px;text-align:center;max-width:300px"></p>
+    <img src="https://www.google.com/favicon.ico" alt="Google">
+    Googleでログイン
+  </button>
+  <p id="loginError"></p>
 </div>
 
 <div id="appScreen">
@@ -498,7 +509,6 @@ header h1{font-size:1.2rem}
 
   <div class="container">
     <div class="loading" id="loadingMsg" style="display:none">📡 データを読み込み中...</div>
-
     <div class="tabs">
       <button class="tab active" onclick="switchTab('bp')">🩸 血圧</button>
       <button class="tab" onclick="switchTab('wt')">⚖️ 体重</button>
