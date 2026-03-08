@@ -25,8 +25,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-
-// セッションをローカルに永続化（ブラウザを閉じてもログイン維持）
 setPersistence(auth, browserLocalPersistence);
 
 let currentUser = null;
@@ -34,7 +32,6 @@ let bpData = [], wtData = [];
 let bpZoom = 7, wtZoom = 7;
 let bpChart = null, wtChart = null;
 
-// 認証状態監視
 onAuthStateChanged(auth, async user => {
   currentUser = user;
   if (user) {
@@ -66,7 +63,6 @@ function setLoginError(msg) {
   el.style.display = msg ? 'block' : 'none';
 }
 
-// ログイン
 window.loginEmail = async () => {
   const email = document.getElementById('inputEmail').value.trim();
   const pass = document.getElementById('inputPass').value;
@@ -89,7 +85,6 @@ window.loginEmail = async () => {
   }
 };
 
-// 新規登録
 window.registerEmail = async () => {
   const email = document.getElementById('inputEmail').value.trim();
   const pass = document.getElementById('inputPass').value;
@@ -115,7 +110,6 @@ window.logout = async () => {
   if (confirm('ログアウトしますか？')) await signOut(auth);
 };
 
-// Firestore
 async function loadData() {
   if (!currentUser) return;
   const uid = currentUser.uid;
@@ -136,7 +130,6 @@ async function fsDelete(store, id) {
   await deleteDoc(doc(db, `users/${currentUser.uid}/${store}`, id));
 }
 
-// タブ
 window.switchTab = t => {
   ['bp','wt','hist'].forEach((x,i) => {
     document.getElementById('tab-'+x).style.display = x===t ? 'block' : 'none';
@@ -148,7 +141,6 @@ window.switchTab = t => {
   if (isRec) stopRec();
 };
 
-// 録音
 let recog=null, recMode=null, isRec=false;
 window.toggleRec = mode => {
   if (isRec && recMode===mode) stopRec();
@@ -204,10 +196,27 @@ function setSt(mode, msg, type) {
   el.className = 'status'+(type?' '+type:'');
 }
 
+// 血圧＋脈拍パーサー
 function parseBP(rawText) {
   let text = rawText
     .replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0))
     .replace(/[、。，．,.　]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // 脈拍を先に抽出
+  let pulse = null;
+  const pulsePats = [
+    /脈拍[がはの]?\s*(\d{2,3})/,
+    /脈[がはの]?\s*(\d{2,3})/,
+    /心拍[がはの]?\s*(\d{2,3})/,
+    /ぱるす[がはの]?\s*(\d{2,3})/,
+    /(\d{2,3})\s*(?:拍)/,
+  ];
+  for (const p of pulsePats) {
+    const m = text.match(p);
+    if (m) { const v=parseInt(m[1]); if(v>=30&&v<=200){pulse=v; break;} }
+  }
+
+  // 血圧を抽出
   const pats = [
     /上[がはの]?\s*(\d{2,3})[\s\S]{0,15}?下[がはの]?\s*(\d{2,3})/,
     /(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})/,
@@ -219,25 +228,36 @@ function parseBP(rawText) {
   ];
   for (const p of pats) {
     const m = text.match(p);
-    if (m) { const s=parseInt(m[1]),d=parseInt(m[2]); if(s>=60&&s<=250&&d>=40&&d<=150) return {sys:s,dia:d}; }
+    if (m) {
+      const s=parseInt(m[1]),d=parseInt(m[2]);
+      if(s>=60&&s<=250&&d>=40&&d<=150) return {sys:s, dia:d, pulse};
+    }
   }
   return null;
 }
 
 function parseWT(rawText) {
   let text = rawText.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0));
+  // 単位あり・体重明示
   const m = text.match(/(\d{2,3}(?:[.,．]\d{1,2})?)\s*(?:キロ|キログラム|kg|ｋｇ)/i)
            || text.match(/体重\s*(\d{2,3}(?:[.,．]\d{1,2})?)/);
   if (m) { const kg=parseFloat(m[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
+  // 単位なし（数字のみ）
+  const m2 = text.match(/^(\d{2,3}(?:[.,．]\d{1,2})?)$/);
+  if (m2) { const kg=parseFloat(m2[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
   return null;
 }
-
 async function processCandidates(mode, candidates) {
   if (mode==='bp') {
     let bp=null;
     for (const c of candidates) { bp=parseBP(c); if(bp) break; }
-    if (bp) { await saveBP(bp.sys, bp.dia); setSt('bp', '✅ 血圧を記録：'+bp.sys+' / '+bp.dia+' mmHg', 'success'); }
-    else setSt('bp', '❌ 認識できませんでした。例：「上が120下が80」', 'error');
+    if (bp) {
+      await saveBP(bp.sys, bp.dia, bp.pulse);
+      const pulseStr = bp.pulse ? '　脈拍 '+bp.pulse+' bpm' : '　（脈拍なし）';
+      setSt('bp', '✅ 血圧を記録：'+bp.sys+' / '+bp.dia+' mmHg'+pulseStr, 'success');
+    } else {
+      setSt('bp', '❌ 認識できませんでした。例：「上が120下が80脈拍70」', 'error');
+    }
   } else {
     let kg=null;
     for (const c of candidates) { kg=parseWT(c); if(kg!==null) break; }
@@ -246,12 +266,15 @@ async function processCandidates(mode, candidates) {
   }
 }
 
-async function saveBP(sys, dia) {
+async function saveBP(sys, dia, pulse) {
   const time = new Date();
-  const id = await fsAdd('bp', {sys, dia, time: time.toISOString()});
-  bpData.push({id, sys, dia, time});
+  const record = {sys, dia, time: time.toISOString()};
+  if (pulse !== null && pulse !== undefined) record.pulse = pulse;
+  const id = await fsAdd('bp', record);
+  bpData.push({id, sys, dia, pulse: pulse||null, time});
   document.getElementById('lSys').textContent = sys;
   document.getElementById('lDia').textContent = dia;
+  document.getElementById('lPulse').textContent = pulse || '--';
   document.getElementById('lBpT').textContent = fmt(time);
   document.getElementById('latBp').style.display = 'flex';
   showSave(); renderBpChart();
@@ -270,9 +293,15 @@ async function saveWT(kg) {
 window.manualBP = async () => {
   const s=parseInt(document.getElementById('manSys').value);
   const d=parseInt(document.getElementById('manDia').value);
-  if(!s||!d||s<60||s>250||d<40||d>150){alert('正しい値を入力してください');return;}
-  await saveBP(s,d); setSt('bp','✅ 血圧を記録：'+s+' / '+d+' mmHg','success');
-  document.getElementById('manSys').value=''; document.getElementById('manDia').value='';
+  const p=document.getElementById('manPulse').value ? parseInt(document.getElementById('manPulse').value) : null;
+  if(!s||!d||s<60||s>250||d<40||d>150){alert('正しい血圧値を入力してください');return;}
+  if(p!==null&&(p<30||p>200)){alert('正しい脈拍値を入力してください');return;}
+  await saveBP(s,d,p);
+  const pulseStr = p ? '　脈拍 '+p+' bpm' : '';
+  setSt('bp','✅ 血圧を記録：'+s+' / '+d+' mmHg'+pulseStr,'success');
+  document.getElementById('manSys').value='';
+  document.getElementById('manDia').value='';
+  document.getElementById('manPulse').value='';
 };
 
 window.manualWT = async () => {
@@ -346,16 +375,20 @@ function renderBpChart(){
   const vis=applySeek(bpData,bpZoom,parseInt(document.getElementById('seekBp').value));
   const ctx=document.getElementById('chartBp').getContext('2d');
   if(bpChart)bpChart.destroy();
+  const datasets = [
+    {label:'収縮期（上）',data:vis.map(d=>d.sys),borderColor:'#fc5c7d',backgroundColor:'rgba(252,92,125,.1)',tension:.3,pointRadius:4,fill:false},
+    {label:'拡張期（下）',data:vis.map(d=>d.dia),borderColor:'#667eea',backgroundColor:'rgba(102,126,234,.1)',tension:.3,pointRadius:4,fill:false},
+  ];
+  if(vis.some(d=>d.pulse)) {
+    datasets.push({label:'脈拍',data:vis.map(d=>d.pulse||null),borderColor:'#38b2ac',backgroundColor:'rgba(56,178,172,.1)',tension:.3,pointRadius:4,fill:false,spanGaps:true});
+  }
   bpChart=new Chart(ctx,{
     type:'line',
-    data:{labels:vis.map(d=>fmtD(d.time)+' '+fmt(d.time)),datasets:[
-      {label:'収縮期（上）',data:vis.map(d=>d.sys),borderColor:'#fc5c7d',backgroundColor:'rgba(252,92,125,.1)',tension:.3,pointRadius:4,fill:false},
-      {label:'拡張期（下）',data:vis.map(d=>d.dia),borderColor:'#667eea',backgroundColor:'rgba(102,126,234,.1)',tension:.3,pointRadius:4,fill:false}
-    ]},
+    data:{labels:vis.map(d=>fmtD(d.time)+' '+fmt(d.time)), datasets},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{legend:{position:'top',labels:{font:{size:11}}},tooltip:{mode:'index',intersect:false}},
       scales:{x:{ticks:{font:{size:10},maxRotation:45},grid:{display:false}},
-              y:{min:40,suggestedMax:180,ticks:{font:{size:11}},title:{display:true,text:'mmHg',font:{size:11}}}}}
+              y:{min:40,suggestedMax:180,ticks:{font:{size:11}},title:{display:true,text:'mmHg / bpm',font:{size:11}}}}}
   });
 }
 
@@ -384,7 +417,7 @@ function renderHistory(){
     ?'<li><div class="empty">まだ記録がありません</div></li>'
     :[...bpData].sort((a,b)=>b.time-a.time).map(e=>`
       <li>
-        <span class="val">${e.sys} / ${e.dia} mmHg</span>
+        <span class="val">${e.sys} / ${e.dia} mmHg${e.pulse?' ❤️ '+e.pulse+'bpm':''}</span>
         <span class="time">${fmtD(e.time)} ${fmt(e.time)}</span>
         <button class="del-btn" onclick="deleteEntry('bp','${e.id}')">🗑</button>
       </li>`).join('');
@@ -419,9 +452,9 @@ window.exportCSV = type => {
   const data=type==='bp'?bpData:wtData;
   if(!data.length){alert('データがありません');return;}
   const sorted=[...data].sort((a,b)=>a.time-b.time);
-  const header=type==='bp'?'日時,収縮期(mmHg),拡張期(mmHg)':'日時,体重(kg)';
+  const header=type==='bp'?'日時,収縮期(mmHg),拡張期(mmHg),脈拍(bpm)':'日時,体重(kg)';
   const rows=sorted.map(e=>type==='bp'
-    ?`${e.time.toLocaleString('ja-JP')},${e.sys},${e.dia}`
+    ?`${e.time.toLocaleString('ja-JP')},${e.sys},${e.dia},${e.pulse||''}`
     :`${e.time.toLocaleString('ja-JP')},${e.kg}`);
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['\uFEFF'+[header,...rows].join('\n')],{type:'text/csv'}));
@@ -478,8 +511,10 @@ header h1{font-size:1.2rem}
 .manual-input{margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0}
 .manual-input summary{font-size:.8rem;color:#a0aec0;cursor:pointer;text-align:center;padding:4px}
 .manual-form{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;justify-content:center;align-items:center}
-.manual-form input{width:72px;padding:8px;border:1px solid #e2e8f0;border-radius:8px;font-size:1rem;text-align:center;-webkit-appearance:none}
+.manual-form input{width:68px;padding:8px;border:1px solid #e2e8f0;border-radius:8px;font-size:1rem;text-align:center;-webkit-appearance:none}
 .manual-form button{padding:8px 16px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;border-radius:8px;font-size:.9rem;cursor:pointer;touch-action:manipulation}
+.manual-form .sep{color:#a0aec0;font-size:1.2rem}
+.manual-form .unit{font-size:.78rem;color:#a0aec0}
 .chart-card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:16px}
 .chart-card h2{font-size:.95rem;color:#718096;margin-bottom:10px}
 .chart-wrap{position:relative;height:220px}
@@ -546,29 +581,33 @@ header h1{font-size:1.2rem}
 
     <div id="tab-bp">
       <div class="card">
-        <h2>血圧を入力</h2>
+        <h2>血圧・脈拍を入力</h2>
         <button class="mic-btn" id="micBp" onclick="toggleRec('bp')">🎤</button>
         <div class="status" id="stBp">マイクボタンを押して話しかけてください</div>
         <div class="recognized" id="recBp"></div>
-        <div class="hint">例：「上が120下が80」「120の80」「最高120最低80」</div>
+        <div class="hint">例：「上が120下が80脈拍70」「120の80心拍65」<br>脈拍は省略可</div>
         <div class="latest" id="latBp" style="display:none">
           <div class="latest-item"><div class="val" id="lSys">--</div><div class="lbl">収縮期（上）</div></div>
           <div class="latest-item"><div class="val" id="lDia">--</div><div class="lbl">拡張期（下）</div></div>
+          <div class="latest-item"><div class="val" id="lPulse">--</div><div class="lbl">脈拍</div></div>
           <div class="latest-item"><div class="val" id="lBpT">--</div><div class="lbl">記録時刻</div></div>
         </div>
         <details class="manual-input">
           <summary>✏️ 手動で入力する</summary>
           <div class="manual-form">
             <input type="number" id="manSys" placeholder="120" min="60" max="250">
-            <span style="color:#a0aec0;font-size:1.2rem">/</span>
+            <span class="sep">/</span>
             <input type="number" id="manDia" placeholder="80" min="40" max="150">
-            <span style="font-size:.8rem;color:#a0aec0">mmHg</span>
+            <span class="unit">mmHg</span>
+            <input type="number" id="manPulse" placeholder="70" min="30" max="200">
+            <span class="unit">bpm</span>
             <button onclick="manualBP()">記録</button>
           </div>
+          <div style="font-size:.75rem;color:#a0aec0;text-align:center;margin-top:6px">脈拍は省略可</div>
         </details>
       </div>
       <div class="chart-card">
-        <h2>📈 血圧グラフ</h2>
+        <h2>📈 血圧・脈拍グラフ</h2>
         <div class="zoom-controls">
           <label>表示範囲：</label>
           <button class="zoom-btn active" onclick="setZoom('bp',7,this)">7日</button>
@@ -601,7 +640,7 @@ header h1{font-size:1.2rem}
           <summary>✏️ 手動で入力する</summary>
           <div class="manual-form">
             <input type="number" id="manKg" placeholder="68.5" min="20" max="300" step="0.1">
-            <span style="font-size:.8rem;color:#a0aec0">kg</span>
+            <span class="unit">kg</span>
             <button onclick="manualWT()">記録</button>
           </div>
         </details>
