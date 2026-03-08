@@ -216,7 +216,14 @@ function parseBP(rawText) {
     if (m) { const v=parseInt(m[1]); if(v>=30&&v<=200){pulse=v; break;} }
   }
 
-  // 血圧を抽出
+  // 「180の100の80」形式（収縮期/拡張期/脈拍）
+  const m3 = text.match(/(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})/);
+  if (m3) {
+    const s=parseInt(m3[1]), d=parseInt(m3[2]), p=parseInt(m3[3]);
+    if (s>=60&&s<=250&&d>=40&&d<=150&&p>=30&&p<=200) return {sys:s, dia:d, pulse:p};
+  }
+
+  // 従来の血圧パターン
   const pats = [
     /上[がはの]?\s*(\d{2,3})[\s\S]{0,15}?下[がはの]?\s*(\d{2,3})/,
     /(\d{2,3})\s*(?:の|スラッシュ|[\/／])\s*(\d{2,3})/,
@@ -235,7 +242,7 @@ function parseBP(rawText) {
   }
   return null;
 }
-
+         
 function parseWT(rawText) {
   let text = rawText.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0));
   // 単位あり・体重明示
