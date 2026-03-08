@@ -256,6 +256,7 @@ function parseWT(rawText) {
 
 async function processCandidates(mode, candidates) {
   if (mode==='bp') {
+    alert('候補: ' + JSON.stringify(candidates)); 
     let bp=null;
     for (const c of candidates) { bp=parseBP(c); if(bp) break; }
     if (bp) {
