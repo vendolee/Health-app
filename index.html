@@ -247,6 +247,7 @@ function parseWT(rawText) {
   if (m2) { const kg=parseFloat(m2[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
   return null;
 }
+
 async function processCandidates(mode, candidates) {
   if (mode==='bp') {
     let bp=null;
