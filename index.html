@@ -7,8 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
-import { getAuth, signInWithRedirect, signInWithPopup, getRedirectResult,
-         GoogleAuthProvider, onAuthStateChanged, signOut }
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut }
   from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy }
   from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
@@ -32,18 +31,6 @@ let bpData = [], wtData = [];
 let bpZoom = 7, wtZoom = 7;
 let bpChart = null, wtChart = null;
 
-// iPad判定
-const isIPad = /iPad/.test(navigator.userAgent) ||
-               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-// リダイレクト結果を受け取る
-getRedirectResult(auth).then(result => {
-  if (result?.user) console.log('redirect login success');
-}).catch(e => {
-  console.error('redirect error:', e);
-  showLoginError(e.code);
-});
-
 // 認証状態監視
 onAuthStateChanged(auth, async user => {
   currentUser = user;
@@ -62,39 +49,23 @@ onAuthStateChanged(auth, async user => {
   }
 });
 
-function showLoginError(code) {
-  const el = document.getElementById('loginError');
-  if (!el) return;
-  const msgs = {
-    'auth/popup-blocked': 'ポップアップがブロックされました。Safariの設定でポップアップを許可してください。',
-    'auth/popup-closed-by-user': 'ログインがキャンセルされました。',
-    'auth/cancelled-popup-request': '',
-    'auth/network-request-failed': 'ネットワークエラーです。接続を確認してください。',
-  };
-  const msg = msgs[code];
-  if (msg === '') return;
-  el.textContent = msg || 'ログインエラー: ' + code;
-  el.style.display = 'block';
-}
-
 window.loginGoogle = async () => {
   document.getElementById('loginError').style.display = 'none';
   try {
-    if (isIPad) {
-      await signInWithPopup(auth, provider);
-    } else {
-      await signInWithRedirect(auth, provider);
-    }
+    await signInWithPopup(auth, provider);
   } catch(e) {
-    if (e.code === 'auth/popup-blocked' || e.code === 'auth/popup-closed-by-user') {
-      try {
-        await signInWithRedirect(auth, provider);
-      } catch(e2) {
-        showLoginError(e2.code);
-      }
-    } else {
-      showLoginError(e.code);
-    }
+    console.error('login error:', e);
+    const msgs = {
+      'auth/popup-blocked': 'ポップアップがブロックされました。Safariの設定 → ポップアップブロックをオフにしてください。',
+      'auth/popup-closed-by-user': 'ログインがキャンセルされました。',
+      'auth/cancelled-popup-request': '',
+      'auth/network-request-failed': 'ネットワークエラーです。接続を確認してください。',
+    };
+    const msg = msgs[e.code];
+    if (msg === '') return;
+    const el = document.getElementById('loginError');
+    el.textContent = msg || 'ログインエラー: ' + e.code;
+    el.style.display = 'block';
   }
 };
 
@@ -102,7 +73,6 @@ window.logout = async () => {
   if (confirm('ログアウトしますか？')) await signOut(auth);
 };
 
-// Firestore
 async function loadData() {
   if (!currentUser) return;
   const uid = currentUser.uid;
@@ -123,7 +93,6 @@ async function fsDelete(store, id) {
   await deleteDoc(doc(db, `users/${currentUser.uid}/${store}`, id));
 }
 
-// タブ
 window.switchTab = t => {
   ['bp','wt','hist'].forEach((x,i) => {
     document.getElementById('tab-'+x).style.display = x===t ? 'block' : 'none';
@@ -135,7 +104,6 @@ window.switchTab = t => {
   if (isRec) stopRec();
 };
 
-// 録音
 let recog=null, recMode=null, isRec=false;
 window.toggleRec = mode => {
   if (isRec && recMode===mode) stopRec();
@@ -191,7 +159,6 @@ function setSt(mode, msg, type) {
   el.className = 'status'+(type?' '+type:'');
 }
 
-// パーサー
 function parseBP(rawText) {
   let text = rawText
     .replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0))
@@ -275,7 +242,6 @@ function showSave() {
   el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),1500);
 }
 
-// グラフ
 function applySeek(data,days,seekVal){
   if(!data.length)return data;
   const sorted=[...data].sort((a,b)=>a.time-b.time);
@@ -506,7 +472,6 @@ header h1{font-size:1.2rem}
       <button class="logout-btn" onclick="logout()">ログアウト</button>
     </div>
   </header>
-
   <div class="container">
     <div class="loading" id="loadingMsg" style="display:none">📡 データを読み込み中...</div>
     <div class="tabs">
