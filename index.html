@@ -199,7 +199,8 @@ function setSt(mode, msg, type) {
 function parseBP(rawText) {
   let text = rawText
     .replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0))
-    .replace(/[、。，．,.　]/g, ' ').replace(/\s+/g, ' ').trim();
+    .replace(/[、。，．,.　]/g, ' ')
+    .replace(/\s+/g, ' ').trim();
 
   // 脈拍を先に抽出
   let pulse = null;
@@ -207,28 +208,31 @@ function parseBP(rawText) {
     /脈拍[がはの]?\s*(\d{2,3})/,
     /脈[がはの]?\s*(\d{2,3})/,
     /心拍[がはの]?\s*(\d{2,3})/,
-    /ぱるす[がはの]?\s*(\d{2,3})/,
-    /(\d{2,3})\s*(?:拍)/,
+    /(\d{2,3})\s*拍/,
   ];
   for (const p of pulsePats) {
     const m = text.match(p);
     if (m) { const v=parseInt(m[1]); if(v>=30&&v<=200){pulse=v; break;} }
   }
 
-  // 3つ連続パターン「180の100の84」「180-100-84」「180/100/84」
-  const sep = '(?:の|スラッシュ|[\\-－\\/／])';
-  const m3 = text.match(new RegExp(`(\\d{2,3})\\s*${sep}\\s*(\\d{2,3})\\s*${sep}\\s*(\\d{2,3})`));
+  // 3つ連続パターン（数字 区切り 数字 区切り 数字）
+  // 区切りは「の」「-」「/」「スラッシュ」など
+  const n = '(\\d{2,3})';
+  const d = '[のスラッシュ\\-－/／\\s]';
+  const m3 = text.match(new RegExp(n + '\\s*' + d + '+\\s*' + n + '\\s*' + d + '+\\s*' + n));
   if (m3) {
-    const s=parseInt(m3[1]), d=parseInt(m3[2]), p=parseInt(m3[3]);
-    if (s>=60&&s<=250&&d>=40&&d<=150&&p>=30&&p<=200) return {sys:s, dia:d, pulse:p};
+    const s=parseInt(m3[1]), di=parseInt(m3[2]), p=parseInt(m3[3]);
+    if (s>=60&&s<=250&&di>=40&&di<=150&&p>=30&&p<=200) {
+      return {sys:s, dia:di, pulse:p};
+    }
   }
 
-  // 従来の血圧パターン
+  // 従来の2つパターン
   const pats = [
     /上[がはの]?\s*(\d{2,3})[\s\S]{0,15}?下[がはの]?\s*(\d{2,3})/,
-    /(\d{2,3})\s*(?:の|スラッシュ|[-－\/／])\s*(\d{2,3})/,
     /最高\s*(\d{2,3})[\s\S]{0,15}?最低\s*(\d{2,3})/,
     /収縮[期]?\s*(\d{2,3})[\s\S]{0,15}?拡張[期]?\s*(\d{2,3})/,
+    /(\d{2,3})\s*[のスラッシュ\-－/／]\s*(\d{2,3})/,
     /(\d{2,3})\s*(?:と|で)\s*(\d{2,3})/,
     /(\d{2,3})\s+(\d{2,3})/,
     /^(\d{2,3})\D+(\d{2,3})$/,
@@ -236,8 +240,8 @@ function parseBP(rawText) {
   for (const p of pats) {
     const m = text.match(p);
     if (m) {
-      const s=parseInt(m[1]),d=parseInt(m[2]);
-      if(s>=60&&s<=250&&d>=40&&d<=150) return {sys:s, dia:d, pulse};
+      const s=parseInt(m[1]),di=parseInt(m[2]);
+      if(s>=60&&s<=250&&di>=40&&di<=150) return {sys:s, dia:di, pulse};
     }
   }
   return null;
@@ -248,7 +252,6 @@ function parseWT(rawText) {
   const m = text.match(/(\d{2,3}(?:[.,．]\d{1,2})?)\s*(?:キロ|キログラム|kg|ｋｇ)/i)
            || text.match(/体重\s*(\d{2,3}(?:[.,．]\d{1,2})?)/);
   if (m) { const kg=parseFloat(m[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
-  // 単位なし
   const m2 = text.match(/^(\d{2,3}(?:[.,．]\d{1,2})?)$/);
   if (m2) { const kg=parseFloat(m2[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
   return null;
@@ -256,7 +259,6 @@ function parseWT(rawText) {
 
 async function processCandidates(mode, candidates) {
   if (mode==='bp') {
-    alert('候補: ' + JSON.stringify(candidates)); 
     let bp=null;
     for (const c of candidates) { bp=parseBP(c); if(bp) break; }
     if (bp) {
@@ -593,7 +595,7 @@ header h1{font-size:1.2rem}
         <button class="mic-btn" id="micBp" onclick="toggleRec('bp')">🎤</button>
         <div class="status" id="stBp">マイクボタンを押して話しかけてください</div>
         <div class="recognized" id="recBp"></div>
-        <div class="hint">例：「180-100-84」「180の100の84」「上が120下が80脈拍70」<br>脈拍は省略可</div>
+        <div class="hint">例：「180-100-84」「上が120下が80脈拍70」<br>脈拍は省略可</div>
         <div class="latest" id="latBp" style="display:none">
           <div class="latest-item"><div class="val" id="lSys">--</div><div class="lbl">収縮期（上）</div></div>
           <div class="latest-item"><div class="val" id="lDia">--</div><div class="lbl">拡張期（下）</div></div>
