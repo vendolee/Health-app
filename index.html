@@ -202,7 +202,6 @@ function parseBP(rawText) {
     .replace(/[、。，．,.　]/g, ' ')
     .replace(/\s+/g, ' ').trim();
 
-  // 脈拍を先に抽出
   let pulse = null;
   const pulsePats = [
     /脈拍[がはの]?\s*(\d{2,3})/,
@@ -216,15 +215,10 @@ function parseBP(rawText) {
   }
 
   // 3つ連続パターン（数字 区切り 数字 区切り 数字）
-  // 区切りは「の」「-」「/」「スラッシュ」など
-  const n = '(\\d{2,3})';
-  const d = '[のスラッシュ\\-－/／\\s]';
-  const m3 = text.match(new RegExp(n + '\\s*' + d + '+\\s*' + n + '\\s*' + d + '+\\s*' + n));
+  const m3 = text.match(/(\d{2,3})\s*[のスラッシュ\-－/／\s]\s*(\d{2,3})\s*[のスラッシュ\-－/／\s]\s*(\d{2,3})/);
   if (m3) {
-    const s=parseInt(m3[1]), di=parseInt(m3[2]), p=parseInt(m3[3]);
-    if (s>=60&&s<=250&&di>=40&&di<=150&&p>=30&&p<=200) {
-      return {sys:s, dia:di, pulse:p};
-    }
+    const s=parseInt(m3[1]), d=parseInt(m3[2]), p=parseInt(m3[3]);
+    if (s>=60&&s<=250&&d>=40&&d<=150&&p>=30&&p<=200) return {sys:s, dia:d, pulse:p};
   }
 
   // 従来の2つパターン
@@ -240,8 +234,8 @@ function parseBP(rawText) {
   for (const p of pats) {
     const m = text.match(p);
     if (m) {
-      const s=parseInt(m[1]),di=parseInt(m[2]);
-      if(s>=60&&s<=250&&di>=40&&di<=150) return {sys:s, dia:di, pulse};
+      const s=parseInt(m[1]),d=parseInt(m[2]);
+      if(s>=60&&s<=250&&d>=40&&d<=150) return {sys:s, dia:d, pulse};
     }
   }
   return null;
