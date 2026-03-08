@@ -216,7 +216,7 @@ function parseBP(rawText) {
   }
 
   // 3つ連続パターン「180の100の84」「180-100-84」「180/100/84」
-  const sep = '(?:の|スラッシュ|[-－\\/／])';
+  const sep = '(?:の|スラッシュ|[\\-－\\/／])';
   const m3 = text.match(new RegExp(`(\\d{2,3})\\s*${sep}\\s*(\\d{2,3})\\s*${sep}\\s*(\\d{2,3})`));
   if (m3) {
     const s=parseInt(m3[1]), d=parseInt(m3[2]), p=parseInt(m3[3]);
