@@ -30,8 +30,15 @@ setPersistence(auth, browserLocalPersistence);
 
 let currentUser = null;
 let bpData = [], wtData = [];
-let bpZoom = 7, wtZoom = 7;
 let bpChart = null, pulseChart = null, wtChart = null;
+
+// 表示制御
+let bpView = { days: 7, offsetRatio: 1.0 }; // offsetRatio: 0.0=先頭 1.0=末尾
+let wtView = { days: 7, offsetRatio: 1.0 };
+// 縦軸制御
+let bpYRange = { sysMax: 200, diaMin: 40 };
+let pulseYRange = { max: 120, min: 40 };
+let wtYRange = { max: null, min: null }; // nullは自動
 
 onAuthStateChanged(auth, async user => {
   currentUser = user;
@@ -51,17 +58,14 @@ function showApp(user) {
   document.getElementById('appScreen').style.display = 'block';
   document.getElementById('userName').textContent = user.email;
 }
-
 function showLogin() {
   document.getElementById('loginScreen').style.display = 'flex';
   document.getElementById('appScreen').style.display = 'none';
   bpData = []; wtData = [];
 }
-
 function setLoginError(msg) {
   const el = document.getElementById('loginError');
-  el.textContent = msg;
-  el.style.display = msg ? 'block' : 'none';
+  el.textContent = msg; el.style.display = msg ? 'block' : 'none';
 }
 
 window.loginEmail = async () => {
@@ -70,20 +74,14 @@ window.loginEmail = async () => {
   if (!email || !pass) { setLoginError('メールアドレスとパスワードを入力してください'); return; }
   setLoginError('');
   document.getElementById('loginBtn').disabled = true;
-  try {
-    await signInWithEmailAndPassword(auth, email, pass);
-  } catch(e) {
+  try { await signInWithEmailAndPassword(auth, email, pass); }
+  catch(e) {
     const msgs = {
-      'auth/user-not-found': 'このメールアドレスは登録されていません',
-      'auth/wrong-password': 'パスワードが違います',
-      'auth/invalid-email': 'メールアドレスの形式が正しくありません',
       'auth/invalid-credential': 'メールアドレスまたはパスワードが違います',
       'auth/too-many-requests': 'ログイン試行が多すぎます。しばらく待ってください',
     };
     setLoginError(msgs[e.code] || 'ログインエラー: ' + e.code);
-  } finally {
-    document.getElementById('loginBtn').disabled = false;
-  }
+  } finally { document.getElementById('loginBtn').disabled = false; }
 };
 
 window.registerEmail = async () => {
@@ -93,23 +91,17 @@ window.registerEmail = async () => {
   if (pass.length < 6) { setLoginError('パスワードは6文字以上にしてください'); return; }
   setLoginError('');
   document.getElementById('registerBtn').disabled = true;
-  try {
-    await createUserWithEmailAndPassword(auth, email, pass);
-  } catch(e) {
+  try { await createUserWithEmailAndPassword(auth, email, pass); }
+  catch(e) {
     const msgs = {
       'auth/email-already-in-use': 'このメールアドレスはすでに登録されています',
-      'auth/invalid-email': 'メールアドレスの形式が正しくありません',
       'auth/weak-password': 'パスワードが弱すぎます（6文字以上）',
     };
     setLoginError(msgs[e.code] || '登録エラー: ' + e.code);
-  } finally {
-    document.getElementById('registerBtn').disabled = false;
-  }
+  } finally { document.getElementById('registerBtn').disabled = false; }
 };
 
-window.logout = async () => {
-  if (confirm('ログアウトしますか？')) await signOut(auth);
-};
+window.logout = async () => { if (confirm('ログアウトしますか？')) await signOut(auth); };
 
 async function loadData() {
   if (!currentUser) return;
@@ -125,7 +117,6 @@ async function fsAdd(store, record) {
   const ref = await addDoc(collection(db, `users/${currentUser.uid}/${store}`), record);
   return ref.id;
 }
-
 async function fsDelete(store, id) {
   if (!currentUser) return;
   await deleteDoc(doc(db, `users/${currentUser.uid}/${store}`, id));
@@ -153,16 +144,12 @@ function startRec(mode) {
   if (!SR) { setSt(mode, '⚠️ 音声認識非対応。手動入力をご利用ください。', 'warn'); return; }
   recMode=mode; isRec=true;
   recog = new SR();
-  recog.lang = 'ja-JP';
-  recog.continuous = false;
-  recog.interimResults = true;
-  recog.maxAlternatives = 5;
+  recog.lang='ja-JP'; recog.continuous=false; recog.interimResults=true; recog.maxAlternatives=5;
   const k = mode==='bp' ? 'Bp' : 'Wt';
   document.getElementById('mic'+k).classList.add('recording');
   document.getElementById('mic'+k).textContent = '⏹';
   setSt(mode, '🎙 聞いています...', '');
   document.getElementById('rec'+k).textContent = '';
-
   recog.onresult = e => {
     let finals=[], interim='';
     for (let i=e.resultIndex; i<e.results.length; i++) {
@@ -174,8 +161,7 @@ function startRec(mode) {
   };
   recog.onerror = e => {
     const msgs = {'not-allowed':'マイクが拒否されました','no-speech':'音声未検出','network':'ネットワークエラー'};
-    setSt(mode, '❌ '+(msgs[e.error]||'エラー: '+e.error), 'error');
-    stopRec();
+    setSt(mode, '❌ '+(msgs[e.error]||'エラー: '+e.error), 'error'); stopRec();
   };
   recog.onend = () => stopRec();
   try { recog.start(); } catch(e) { setSt(mode, '❌ 音声認識を開始できませんでした', 'error'); stopRec(); }
@@ -193,57 +179,42 @@ function stopRec() {
 
 function setSt(mode, msg, type) {
   const el = document.getElementById('st'+(mode==='bp'?'Bp':'Wt'));
-  el.textContent = msg;
-  el.className = 'status'+(type?' '+type:'');
+  el.textContent = msg; el.className = 'status'+(type?' '+type:'');
 }
 
 function parseBP(rawText) {
   let text = rawText
     .replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0))
-    .replace(/[、。，．,.　]/g, ' ')
-    .replace(/\s+/g, ' ').trim();
-
+    .replace(/[、。，．,.　]/g, ' ').replace(/\s+/g, ' ').trim();
   let pulse = null;
-  const pulsePats = [
-    /脈拍[がはの]?\s*(\d{2,3})/,
-    /脈[がはの]?\s*(\d{2,3})/,
-    /心拍[がはの]?\s*(\d{2,3})/,
-    /(\d{2,3})\s*拍/,
-  ];
+  const pulsePats = [/脈拍[がはの]?\s*(\d{2,3})/, /脈[がはの]?\s*(\d{2,3})/, /心拍[がはの]?\s*(\d{2,3})/, /(\d{2,3})\s*拍/];
   for (const p of pulsePats) {
     const m = text.match(p);
     if (m) { const v=parseInt(m[1]); if(v>=30&&v<=200){pulse=v; break;} }
   }
-
   const m3 = text.match(/(\d{2,3})\s*[のスラッシュ\-－/／\s]\s*(\d{2,3})\s*[のスラッシュ\-－/／\s]\s*(\d{2,3})/);
   if (m3) {
     const s=parseInt(m3[1]), d=parseInt(m3[2]), p=parseInt(m3[3]);
     if (s>=60&&s<=250&&d>=40&&d<=150&&p>=30&&p<=200) return {sys:s, dia:d, pulse:p};
   }
-
   const pats = [
     /上[がはの]?\s*(\d{2,3})[\s\S]{0,15}?下[がはの]?\s*(\d{2,3})/,
     /最高\s*(\d{2,3})[\s\S]{0,15}?最低\s*(\d{2,3})/,
     /収縮[期]?\s*(\d{2,3})[\s\S]{0,15}?拡張[期]?\s*(\d{2,3})/,
     /(\d{2,3})\s*[のスラッシュ\-－/／]\s*(\d{2,3})/,
     /(\d{2,3})\s*(?:と|で)\s*(\d{2,3})/,
-    /(\d{2,3})\s+(\d{2,3})/,
-    /^(\d{2,3})\D+(\d{2,3})$/,
+    /(\d{2,3})\s+(\d{2,3})/, /^(\d{2,3})\D+(\d{2,3})$/,
   ];
   for (const p of pats) {
     const m = text.match(p);
-    if (m) {
-      const s=parseInt(m[1]),d=parseInt(m[2]);
-      if(s>=60&&s<=250&&d>=40&&d<=150) return {sys:s, dia:d, pulse};
-    }
+    if (m) { const s=parseInt(m[1]),d=parseInt(m[2]); if(s>=60&&s<=250&&d>=40&&d<=150) return {sys:s, dia:d, pulse}; }
   }
   return null;
 }
 
 function parseWT(rawText) {
   let text = rawText.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0)-0xFEE0));
-  const m = text.match(/(\d{2,3}(?:[.,．]\d{1,2})?)\s*(?:キロ|キログラム|kg|ｋｇ)/i)
-           || text.match(/体重\s*(\d{2,3}(?:[.,．]\d{1,2})?)/);
+  const m = text.match(/(\d{2,3}(?:[.,．]\d{1,2})?)\s*(?:キロ|キログラム|kg|ｋｇ)/i) || text.match(/体重\s*(\d{2,3}(?:[.,．]\d{1,2})?)/);
   if (m) { const kg=parseFloat(m[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
   const m2 = text.match(/^(\d{2,3}(?:[.,．]\d{1,2})?)$/);
   if (m2) { const kg=parseFloat(m2[1].replace(/[，．、]/g,'.')); if(kg>=20&&kg<=300) return kg; }
@@ -256,11 +227,8 @@ async function processCandidates(mode, candidates) {
     for (const c of candidates) { bp=parseBP(c); if(bp) break; }
     if (bp) {
       await saveBP(bp.sys, bp.dia, bp.pulse);
-      const pulseStr = bp.pulse ? '　脈拍 '+bp.pulse+' bpm' : '　（脈拍なし）';
-      setSt('bp', '✅ 血圧を記録：'+bp.sys+' / '+bp.dia+' mmHg'+pulseStr, 'success');
-    } else {
-      setSt('bp', '❌ 認識できませんでした。例：「180-100-84」「上が120下が80」', 'error');
-    }
+      setSt('bp', '✅ 血圧を記録：'+bp.sys+' / '+bp.dia+' mmHg'+(bp.pulse?'　脈拍 '+bp.pulse+' bpm':'　（脈拍なし）'), 'success');
+    } else setSt('bp', '❌ 認識できませんでした。例：「180-100-84」「上が120下が80」', 'error');
   } else {
     let kg=null;
     for (const c of candidates) { kg=parseWT(c); if(kg!==null) break; }
@@ -272,7 +240,7 @@ async function processCandidates(mode, candidates) {
 async function saveBP(sys, dia, pulse) {
   const time = new Date();
   const record = {sys, dia, time: time.toISOString()};
-  if (pulse !== null && pulse !== undefined) record.pulse = pulse;
+  if (pulse != null) record.pulse = pulse;
   const id = await fsAdd('bp', record);
   bpData.push({id, sys, dia, pulse: pulse||null, time});
   document.getElementById('lSys').textContent = sys;
@@ -298,13 +266,10 @@ window.manualBP = async () => {
   const d=parseInt(document.getElementById('manDia').value);
   const p=document.getElementById('manPulse').value ? parseInt(document.getElementById('manPulse').value) : null;
   if(!s||!d||s<60||s>250||d<40||d>150){alert('正しい血圧値を入力してください');return;}
-  if(p!==null&&(p<30||p>200)){alert('正しい脈拍値を入力してください');return;}
+  if(p!=null&&(p<30||p>200)){alert('正しい脈拍値を入力してください');return;}
   await saveBP(s,d,p);
-  const pulseStr = p ? '　脈拍 '+p+' bpm' : '';
-  setSt('bp','✅ 血圧を記録：'+s+' / '+d+' mmHg'+pulseStr,'success');
-  document.getElementById('manSys').value='';
-  document.getElementById('manDia').value='';
-  document.getElementById('manPulse').value='';
+  setSt('bp','✅ 血圧を記録：'+s+' / '+d+' mmHg'+(p?'　脈拍 '+p+' bpm':''),'success');
+  document.getElementById('manSys').value=''; document.getElementById('manDia').value=''; document.getElementById('manPulse').value='';
 };
 
 window.manualWT = async () => {
@@ -319,73 +284,96 @@ function showSave() {
   el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),1500);
 }
 
-// タイムスケールの範囲を計算
-function getTimeRange(data, days, seekVal) {
+// ===== 表示範囲計算 =====
+function getRange(data, view) {
   if (!data.length) return {min: null, max: null};
   const sorted = [...data].sort((a,b) => a.time-b.time);
-  if (days === 0) return {min: sorted[0].time, max: sorted[sorted.length-1].time};
-  const wMs = days * 86400000;
-  const minT = sorted[0].time.getTime();
-  const maxT = sorted[sorted.length-1].time.getTime();
-  const span = maxT - minT;
-  if (span <= wMs) return {min: sorted[0].time, max: sorted[sorted.length-1].time};
-  const offset = (seekVal/100) * Math.max(0, span-wMs);
-  return {min: new Date(minT+offset), max: new Date(minT+offset+wMs)};
+  const first = sorted[0].time.getTime();
+  const last = sorted[sorted.length-1].time.getTime();
+  if (view.days === 0) return {min: new Date(first), max: new Date(last)};
+  const wMs = view.days * 86400000;
+  const span = last - first;
+  if (span <= wMs) return {min: new Date(first), max: new Date(last)};
+  const offset = view.offsetRatio * Math.max(0, span - wMs);
+  return {min: new Date(first + offset), max: new Date(first + offset + wMs)};
 }
 
-function updateSeekUI(type, days) {
-  const k = type==='bp'?'Bp':'Wt', data = type==='bp'?bpData:wtData;
-  const wrap = document.getElementById('seekWrap'+k);
-  if (!data.length||days===0) {wrap.style.display='none'; return;}
+function canSeek(data, view) {
+  if (!data.length || view.days === 0) return false;
   const sorted = [...data].sort((a,b) => a.time-b.time);
-  const span = sorted.length>1 ? sorted[sorted.length-1].time-sorted[0].time : 0;
-  if (span <= days*86400000) {wrap.style.display='none'; return;}
-  wrap.style.display='block';
-  refreshSeekLabels(type);
+  const span = sorted[sorted.length-1].time - sorted[0].time;
+  return span > view.days * 86400000;
 }
 
-function refreshSeekLabels(type) {
-  const k = type==='bp'?'Bp':'Wt';
-  const data = [...(type==='bp'?bpData:wtData)].sort((a,b) => a.time-b.time);
-  const days = type==='bp'?bpZoom:wtZoom;
-  if (!data.length) return;
-  const sv = parseInt(document.getElementById('seek'+k).value);
-  const range = getTimeRange(data, days, sv);
-  document.getElementById('seekFrom'+k).textContent = fmtD(range.min);
-  document.getElementById('seekTo'+k).textContent = fmtD(range.max);
-  document.getElementById('seekLabel'+k).textContent = fmtD(range.min)+' ～ '+fmtD(range.max);
+function updateSeekLabel(type) {
+  const data = type==='bp' ? bpData : wtData;
+  const view = type==='bp' ? bpView : wtView;
+  const k = type==='bp' ? 'Bp' : 'Wt';
+  const range = getRange(data, view);
+  if (range.min) {
+    document.getElementById('seekLabel'+k).textContent = fmtD(range.min)+' ～ '+fmtD(range.max);
+  }
+  const seekEl = document.getElementById('seekWrap'+k);
+  seekEl.style.display = canSeek(data, view) ? 'block' : 'none';
+  if (canSeek(data, view)) {
+    document.getElementById('seek'+k).value = Math.round(view.offsetRatio * 100);
+  }
 }
 
-window.setZoom = (type, days, btn) => {
-  if (type==='bp') bpZoom=days; else wtZoom=days;
-  btn.closest('.zoom-controls').querySelectorAll('.zoom-btn').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  updateSeekUI(type, days);
+// ===== 横軸操作 =====
+window.xZoom = (type, factor) => {
+  const view = type==='bp' ? bpView : wtView;
+  if (factor > 1) {
+    // 拡大（期間を縮小）
+    view.days = view.days === 0 ? 30 : Math.max(1, Math.round(view.days / 1.5));
+  } else {
+    // 縮小（期間を拡大）
+    view.days = view.days === 0 ? 0 : Math.min(365, Math.round(view.days * 1.5));
+    if (view.days >= 365) view.days = 0;
+  }
   if (type==='bp') renderBpChart(); else renderWtChart();
 };
 
-window.onSeek = type => {
-  refreshSeekLabels(type);
+window.xReset = type => {
+  if (type==='bp') { bpView.days=7; bpView.offsetRatio=1.0; renderBpChart(); }
+  else { wtView.days=7; wtView.offsetRatio=1.0; renderWtChart(); }
+};
+
+window.onSeek = (type, val) => {
+  const view = type==='bp' ? bpView : wtView;
+  view.offsetRatio = val / 100;
+  updateSeekLabel(type);
   if (type==='bp') renderBpChart(); else renderWtChart();
 };
 
-// タイムスケール用の共通オプション
+// ===== 縦軸操作 =====
+window.yZoom = (type, axis, factor) => {
+  if (type==='bp') {
+    if (axis==='sys') bpYRange.sysMax = Math.round(factor>1 ? bpYRange.sysMax/1.2 : bpYRange.sysMax*1.2);
+    if (axis==='dia') bpYRange.diaMin = Math.round(factor>1 ? bpYRange.diaMin*1.2 : bpYRange.diaMin/1.2);
+    renderBpChart();
+  } else if (type==='pulse') {
+    pulseYRange.max = Math.round(factor>1 ? pulseYRange.max/1.2 : pulseYRange.max*1.2);
+    pulseYRange.min = Math.round(factor>1 ? pulseYRange.min*1.2 : pulseYRange.min/1.2);
+    renderBpChart();
+  } else {
+    // 体重
+    renderWtChart();
+  }
+};
+
+window.yReset = type => {
+  if (type==='bp') { bpYRange={sysMax:200, diaMin:40}; renderBpChart(); }
+  else if (type==='pulse') { pulseYRange={max:120, min:40}; renderBpChart(); }
+  else { wtYRange={max:null, min:null}; renderWtChart(); }
+};
+
+// ===== グラフ共通設定 =====
 function timeScaleOptions(min, max) {
   return {
-    type: 'time',
-    min: min,
-    max: max,
-    time: {
-      unit: 'hour',
-      stepSize: 1,
-      displayFormats: { hour: 'M/d HH:mm' }
-    },
-    ticks: {
-      font: {size: 9},
-      maxRotation: 45,
-      autoSkip: true,
-      maxTicksLimit: 12,
-    },
+    type: 'time', min, max,
+    time: { unit: 'hour', stepSize: 1, displayFormats: { hour: 'M/d HH:mm' } },
+    ticks: { font:{size:9}, maxRotation:45, autoSkip:true, maxTicksLimit:10 },
     grid: { display: false }
   };
 }
@@ -393,68 +381,26 @@ function timeScaleOptions(min, max) {
 function renderBpChart() {
   const emptyBp = document.getElementById('emptyBp');
   const emptyPulse = document.getElementById('emptyPulse');
-
-  if (!bpData.length) {
-    emptyBp.style.display='block';
-    emptyPulse.style.display='block';
-    return;
-  }
+  if (!bpData.length) { emptyBp.style.display='block'; emptyPulse.style.display='block'; return; }
   emptyBp.style.display='none';
 
-  updateSeekUI('bp', bpZoom);
-  const sv = parseInt(document.getElementById('seekBp').value);
-  const range = getTimeRange(bpData, bpZoom, sv);
-
-  // 表示範囲内のデータ
-  const vis = bpData.filter(d => {
-    if (!range.min) return true;
-    return d.time >= range.min && d.time <= range.max;
-  }).sort((a,b) => a.time-b.time);
+  updateSeekLabel('bp');
+  const range = getRange(bpData, bpView);
+  const vis = bpData.filter(d => !range.min || (d.time >= range.min && d.time <= range.max)).sort((a,b)=>a.time-b.time);
 
   // 血圧グラフ
   const ctxBp = document.getElementById('chartBp').getContext('2d');
   if (bpChart) bpChart.destroy();
   bpChart = new Chart(ctxBp, {
     type: 'scatter',
-    data: {
-      datasets: [
-        {
-          label: '収縮期（上）',
-          data: vis.map(d => ({x: d.time, y: d.sys})),
-          borderColor: '#fc5c7d',
-          backgroundColor: '#fc5c7d',
-          pointRadius: 5,
-          pointHoverRadius: 7,
-          showLine: true,
-          tension: 0.3,
-        },
-        {
-          label: '拡張期（下）',
-          data: vis.map(d => ({x: d.time, y: d.dia})),
-          borderColor: '#667eea',
-          backgroundColor: '#667eea',
-          pointRadius: 5,
-          pointHoverRadius: 7,
-          showLine: true,
-          tension: 0.3,
-        }
-      ]
-    },
+    data: { datasets: [
+      { label:'収縮期（上）', data:vis.map(d=>({x:d.time,y:d.sys})), borderColor:'#fc5c7d', backgroundColor:'#fc5c7d', pointRadius:3, pointHoverRadius:5, showLine:true, tension:0.3, borderWidth:1 },
+      { label:'拡張期（下）', data:vis.map(d=>({x:d.time,y:d.dia})), borderColor:'#667eea', backgroundColor:'#667eea', pointRadius:3, pointHoverRadius:5, showLine:true, tension:0.3, borderWidth:1 },
+    ]},
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {position:'top', labels:{font:{size:11}}},
-        tooltip: {
-          callbacks: {
-            title: items => new Date(items[0].parsed.x).toLocaleString('ja-JP', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}),
-          }
-        }
-      },
-      scales: {
-        x: timeScaleOptions(range.min, range.max),
-        y: {min:40, suggestedMax:180, ticks:{font:{size:11}}, title:{display:true, text:'mmHg', font:{size:11}}}
-      }
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}} },
+      scales:{ x:timeScaleOptions(range.min,range.max), y:{min:bpYRange.diaMin, max:bpYRange.sysMax, ticks:{font:{size:11}}, title:{display:true,text:'mmHg',font:{size:11}}} }
     }
   });
 
@@ -470,81 +416,35 @@ function renderBpChart() {
   if (pulseChart) pulseChart.destroy();
   pulseChart = new Chart(ctxPulse, {
     type: 'scatter',
-    data: {
-      datasets: [{
-        label: '脈拍',
-        data: pulseVis.map(d => ({x: d.time, y: d.pulse})),
-        borderColor: '#38b2ac',
-        backgroundColor: '#38b2ac',
-        pointRadius: 5,
-        pointHoverRadius: 7,
-        showLine: true,
-        tension: 0.3,
-      }]
-    },
+    data: { datasets: [
+      { label:'脈拍', data:pulseVis.map(d=>({x:d.time,y:d.pulse})), borderColor:'#38b2ac', backgroundColor:'#38b2ac', pointRadius:3, pointHoverRadius:5, showLine:true, tension:0.3, borderWidth:1 },
+    ]},
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {position:'top', labels:{font:{size:11}}},
-        tooltip: {
-          callbacks: {
-            title: items => new Date(items[0].parsed.x).toLocaleString('ja-JP', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}),
-          }
-        }
-      },
-      scales: {
-        x: timeScaleOptions(range.min, range.max),
-        y: {min:30, suggestedMax:120, ticks:{font:{size:11}}, title:{display:true, text:'bpm', font:{size:11}}}
-      }
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}} },
+      scales:{ x:timeScaleOptions(range.min,range.max), y:{min:pulseYRange.min, max:pulseYRange.max, ticks:{font:{size:11}}, title:{display:true,text:'bpm',font:{size:11}}} }
     }
   });
 }
 
 function renderWtChart() {
   const empty = document.getElementById('emptyWt');
-  if (!wtData.length) {empty.style.display='block'; return;}
+  if (!wtData.length) { empty.style.display='block'; return; }
   empty.style.display='none';
-  updateSeekUI('wt', wtZoom);
-  const sv = parseInt(document.getElementById('seekWt').value);
-  const range = getTimeRange(wtData, wtZoom, sv);
-  const vis = wtData.filter(d => {
-    if (!range.min) return true;
-    return d.time >= range.min && d.time <= range.max;
-  }).sort((a,b) => a.time-b.time);
-
+  updateSeekLabel('wt');
+  const range = getRange(wtData, wtView);
+  const vis = wtData.filter(d => !range.min || (d.time >= range.min && d.time <= range.max)).sort((a,b)=>a.time-b.time);
   const ctx = document.getElementById('chartWt').getContext('2d');
   if (wtChart) wtChart.destroy();
   wtChart = new Chart(ctx, {
     type: 'scatter',
-    data: {
-      datasets: [{
-        label: '体重',
-        data: vis.map(d => ({x: d.time, y: d.kg})),
-        borderColor: '#38b2ac',
-        backgroundColor: 'rgba(56,178,172,.2)',
-        pointRadius: 5,
-        pointHoverRadius: 7,
-        showLine: true,
-        tension: 0.3,
-        fill: true,
-      }]
-    },
+    data: { datasets: [
+      { label:'体重', data:vis.map(d=>({x:d.time,y:d.kg})), borderColor:'#38b2ac', backgroundColor:'rgba(56,178,172,.15)', pointRadius:3, pointHoverRadius:5, showLine:true, tension:0.3, borderWidth:1, fill:true },
+    ]},
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {position:'top', labels:{font:{size:11}}},
-        tooltip: {
-          callbacks: {
-            title: items => new Date(items[0].parsed.x).toLocaleString('ja-JP', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}),
-          }
-        }
-      },
-      scales: {
-        x: timeScaleOptions(range.min, range.max),
-        y: {ticks:{font:{size:11}}, title:{display:true, text:'kg', font:{size:11}}}
-      }
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}} },
+      scales:{ x:timeScaleOptions(range.min,range.max), y:{ticks:{font:{size:11}}, title:{display:true,text:'kg',font:{size:11}}} }
     }
   });
 }
@@ -571,8 +471,8 @@ function renderHistory() {
 window.deleteEntry = async (type, id) => {
   if (!confirm('この記録を削除しますか？')) return;
   await fsDelete(type, id);
-  if (type==='bp') {bpData=bpData.filter(d=>d.id!==id); renderBpChart();}
-  else {wtData=wtData.filter(d=>d.id!==id); renderWtChart();}
+  if (type==='bp') { bpData=bpData.filter(d=>d.id!==id); renderBpChart(); }
+  else { wtData=wtData.filter(d=>d.id!==id); renderWtChart(); }
   renderHistory();
 };
 
@@ -582,13 +482,13 @@ window.clearData = async type => {
   for (const item of items) await fsDelete(type, item.id);
   if (type==='bp') {
     bpData=[];
-    if (bpChart){bpChart.destroy();bpChart=null;}
-    if (pulseChart){pulseChart.destroy();pulseChart=null;}
+    if(bpChart){bpChart.destroy();bpChart=null;}
+    if(pulseChart){pulseChart.destroy();pulseChart=null;}
     document.getElementById('emptyBp').style.display='block';
     document.getElementById('emptyPulse').style.display='block';
   } else {
     wtData=[];
-    if (wtChart){wtChart.destroy();wtChart=null;}
+    if(wtChart){wtChart.destroy();wtChart=null;}
     document.getElementById('emptyWt').style.display='block';
   }
   renderHistory();
@@ -596,7 +496,7 @@ window.clearData = async type => {
 
 window.exportCSV = type => {
   const data = type==='bp'?bpData:wtData;
-  if (!data.length) {alert('データがありません'); return;}
+  if (!data.length) { alert('データがありません'); return; }
   const sorted = [...data].sort((a,b)=>a.time-b.time);
   const header = type==='bp'?'日時,収縮期(mmHg),拡張期(mmHg),脈拍(bpm)':'日時,体重(kg)';
   const rows = sorted.map(e => type==='bp'
@@ -635,53 +535,55 @@ header h1{font-size:1.2rem}
 .user-name{font-size:.75rem;opacity:.85;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .logout-btn{background:rgba(255,255,255,.2);border:none;color:white;padding:6px 12px;border-radius:20px;font-size:.78rem;cursor:pointer;touch-action:manipulation;white-space:nowrap}
 .loading{text-align:center;color:#a0aec0;padding:20px;font-size:.9rem}
-.container{max-width:680px;margin:0 auto;padding:16px}
-.tabs{display:flex;gap:8px;margin-bottom:16px}
+.container{max-width:680px;margin:0 auto;padding:12px}
+.tabs{display:flex;gap:8px;margin-bottom:12px}
 .tab{flex:1;padding:10px;border:none;border-radius:10px;font-size:.95rem;cursor:pointer;background:white;color:#718096;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.08);transition:all .2s;-webkit-appearance:none}
 .tab.active{background:linear-gradient(135deg,#667eea,#764ba2);color:white}
-.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:16px}
-.card h2{font-size:.95rem;color:#718096;margin-bottom:14px}
-.mic-btn{width:80px;height:80px;border-radius:50%;border:none;background:linear-gradient(135deg,#667eea,#764ba2);color:white;font-size:1.8rem;cursor:pointer;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;box-shadow:0 4px 15px rgba(102,126,234,.4);transition:all .2s;-webkit-appearance:none;touch-action:manipulation}
+.card{background:white;border-radius:16px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:12px}
+.card h2{font-size:.95rem;color:#718096;margin-bottom:12px}
+.mic-btn{width:72px;height:72px;border-radius:50%;border:none;background:linear-gradient(135deg,#667eea,#764ba2);color:white;font-size:1.6rem;cursor:pointer;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;box-shadow:0 4px 15px rgba(102,126,234,.4);transition:all .2s;-webkit-appearance:none;touch-action:manipulation}
 .mic-btn.recording{background:linear-gradient(135deg,#fc5c7d,#6a3093);animation:pulse 1s infinite}
 @keyframes pulse{0%,100%{box-shadow:0 4px 15px rgba(252,92,125,.4)}50%{box-shadow:0 4px 30px rgba(252,92,125,.7)}}
-.status{text-align:center;font-size:.88rem;color:#718096;min-height:38px;padding:8px;background:#f7fafc;border-radius:8px;line-height:1.5}
+.status{text-align:center;font-size:.85rem;color:#718096;min-height:36px;padding:8px;background:#f7fafc;border-radius:8px;line-height:1.5}
 .status.success{color:#38a169;background:#f0fff4}
 .status.error{color:#e53e3e;background:#fff5f5}
 .status.warn{color:#b7791f;background:#fffbeb}
-.recognized{text-align:center;font-size:.82rem;color:#a0aec0;margin-top:6px;min-height:18px;font-style:italic;word-break:break-all}
-.hint{font-size:.78rem;color:#a0aec0;text-align:center;margin-top:10px;line-height:1.7}
-.latest{display:flex;justify-content:space-around;margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0}
+.recognized{text-align:center;font-size:.8rem;color:#a0aec0;margin-top:4px;min-height:16px;font-style:italic;word-break:break-all}
+.hint{font-size:.75rem;color:#a0aec0;text-align:center;margin-top:8px;line-height:1.7}
+.latest{display:flex;justify-content:space-around;margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0}
 .latest-item{text-align:center}
-.latest-item .val{font-size:1.5rem;font-weight:700;color:#667eea}
-.latest-item .lbl{font-size:.72rem;color:#a0aec0}
-.manual-input{margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0}
+.latest-item .val{font-size:1.4rem;font-weight:700;color:#667eea}
+.latest-item .lbl{font-size:.7rem;color:#a0aec0}
+.manual-input{margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0}
 .manual-input summary{font-size:.8rem;color:#a0aec0;cursor:pointer;text-align:center;padding:4px}
-.manual-form{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;justify-content:center;align-items:center}
-.manual-form input{width:68px;padding:8px;border:1px solid #e2e8f0;border-radius:8px;font-size:1rem;text-align:center;-webkit-appearance:none}
-.manual-form button{padding:8px 16px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;border-radius:8px;font-size:.9rem;cursor:pointer;touch-action:manipulation}
-.manual-form .sep{color:#a0aec0;font-size:1.2rem}
-.manual-form .unit{font-size:.78rem;color:#a0aec0}
-.chart-card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:16px}
-.chart-card h2{font-size:.95rem;color:#718096;margin-bottom:10px}
-.chart-wrap{position:relative;height:200px}
-.zoom-controls{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
-.zoom-controls label{font-size:.78rem;color:#718096;white-space:nowrap}
-.zoom-btn{padding:4px 12px;border:1px solid #e2e8f0;border-radius:8px;background:white;color:#667eea;font-size:.78rem;cursor:pointer;font-weight:600;touch-action:manipulation}
-.zoom-btn.active{background:#667eea;color:white}
-.seek-wrap{margin-top:10px}
-.seek-wrap label{font-size:.78rem;color:#718096;display:block;margin-bottom:4px}
-.seek-bar{width:100%;accent-color:#667eea;height:24px}
-.seek-labels{display:flex;justify-content:space-between;font-size:.72rem;color:#a0aec0;margin-top:2px}
+.manual-form{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;justify-content:center;align-items:center}
+.manual-form input{width:64px;padding:7px;border:1px solid #e2e8f0;border-radius:8px;font-size:.95rem;text-align:center;-webkit-appearance:none}
+.manual-form button{padding:7px 14px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;border-radius:8px;font-size:.88rem;cursor:pointer;touch-action:manipulation}
+.manual-form .sep{color:#a0aec0;font-size:1.1rem}
+.manual-form .unit{font-size:.75rem;color:#a0aec0}
+.chart-card{background:white;border-radius:16px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:12px}
+.chart-card h2{font-size:.9rem;color:#718096;margin-bottom:8px}
+.chart-wrap{position:relative;height:260px}
+/* 軸操作ボタン */
+.axis-controls{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;align-items:center}
+.axis-controls .grp{display:flex;align-items:center;gap:4px;background:#f7fafc;border-radius:8px;padding:4px 8px}
+.axis-controls .grp-label{font-size:.72rem;color:#718096;white-space:nowrap;margin-right:2px}
+.ax-btn{padding:3px 8px;border:1px solid #e2e8f0;border-radius:6px;background:white;color:#667eea;font-size:.78rem;cursor:pointer;font-weight:600;touch-action:manipulation;white-space:nowrap}
+.ax-btn.reset{color:#a0aec0;font-size:.72rem}
+/* シークバー */
+.seek-wrap{margin-top:8px;display:none}
+.seek-label{font-size:.75rem;color:#718096;margin-bottom:3px}
+.seek-bar{width:100%;accent-color:#667eea;height:22px}
 .history-list{list-style:none}
-.history-list li{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid #f0f4f8;font-size:.88rem;gap:8px}
+.history-list li{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f0f4f8;font-size:.85rem;gap:8px}
 .history-list li:last-child{border-bottom:none}
 .history-list .val{font-weight:600;color:#2d3748;flex:1}
-.history-list .time{color:#a0aec0;font-size:.78rem}
+.history-list .time{color:#a0aec0;font-size:.75rem}
 .del-btn{background:none;border:none;font-size:1rem;cursor:pointer;padding:2px 6px;touch-action:manipulation}
-.empty{text-align:center;color:#a0aec0;font-size:.88rem;padding:18px}
+.empty{text-align:center;color:#a0aec0;font-size:.85rem;padding:16px}
 .btn-row{display:flex;gap:8px;margin-top:8px;justify-content:center}
-.clear-btn{padding:8px 16px;border:1px solid #e2e8f0;border-radius:8px;background:white;color:#e53e3e;font-size:.82rem;cursor:pointer;touch-action:manipulation}
-.export-btn{padding:8px 16px;border:1px solid #e2e8f0;border-radius:8px;background:white;color:#667eea;font-size:.82rem;cursor:pointer;touch-action:manipulation}
+.clear-btn{padding:7px 14px;border:1px solid #e2e8f0;border-radius:8px;background:white;color:#e53e3e;font-size:.8rem;cursor:pointer;touch-action:manipulation}
+.export-btn{padding:7px 14px;border:1px solid #e2e8f0;border-radius:8px;background:white;color:#667eea;font-size:.8rem;cursor:pointer;touch-action:manipulation}
 .save-indicator{position:fixed;bottom:24px;right:20px;background:#38a169;color:white;padding:10px 18px;border-radius:20px;font-size:.82rem;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
 .save-indicator.show{opacity:1}
 </style>
@@ -725,6 +627,7 @@ header h1{font-size:1.2rem}
       <button class="tab" onclick="switchTab('hist')">📋 履歴</button>
     </div>
 
+    <!-- 血圧タブ -->
     <div id="tab-bp">
       <div class="card">
         <h2>血圧・脈拍を入力</h2>
@@ -749,37 +652,52 @@ header h1{font-size:1.2rem}
             <span class="unit">bpm</span>
             <button onclick="manualBP()">記録</button>
           </div>
-          <div style="font-size:.75rem;color:#a0aec0;text-align:center;margin-top:6px">脈拍は省略可</div>
+          <div style="font-size:.72rem;color:#a0aec0;text-align:center;margin-top:4px">脈拍は省略可</div>
         </details>
       </div>
 
       <!-- 血圧グラフ -->
       <div class="chart-card">
         <h2>📈 血圧グラフ</h2>
-        <div class="zoom-controls">
-          <label>表示範囲：</label>
-          <button class="zoom-btn active" onclick="setZoom('bp',7,this)">7日</button>
-          <button class="zoom-btn" onclick="setZoom('bp',14,this)">14日</button>
-          <button class="zoom-btn" onclick="setZoom('bp',30,this)">30日</button>
-          <button class="zoom-btn" onclick="setZoom('bp',0,this)">全期間</button>
+        <div class="axis-controls">
+          <div class="grp">
+            <span class="grp-label">横軸</span>
+            <button class="ax-btn" onclick="xZoom('bp',2)">＋拡大</button>
+            <button class="ax-btn" onclick="xZoom('bp',0.5)">－縮小</button>
+            <button class="ax-btn reset" onclick="xReset('bp')">リセット</button>
+          </div>
+          <div class="grp">
+            <span class="grp-label">縦軸</span>
+            <button class="ax-btn" onclick="yZoom('bp','sys',2)">＋拡大</button>
+            <button class="ax-btn" onclick="yZoom('bp','sys',0.5)">－縮小</button>
+            <button class="ax-btn reset" onclick="yReset('bp')">リセット</button>
+          </div>
         </div>
-        <div class="seek-wrap" id="seekWrapBp" style="display:none">
-          <label>📍 <span id="seekLabelBp"></span></label>
-          <input type="range" class="seek-bar" id="seekBp" min="0" max="100" value="100" oninput="onSeek('bp')">
-          <div class="seek-labels"><span id="seekFromBp"></span><span id="seekToBp"></span></div>
+        <div class="seek-wrap" id="seekWrapBp">
+          <div class="seek-label">📍 <span id="seekLabelBp"></span></div>
+          <input type="range" class="seek-bar" id="seekBp" min="0" max="100" value="100" oninput="onSeek('bp', this.value)">
         </div>
         <div class="chart-wrap"><canvas id="chartBp"></canvas></div>
         <div class="empty" id="emptyBp">まだデータがありません</div>
       </div>
 
-      <!-- 脈拍グラフ（横軸共有） -->
+      <!-- 脈拍グラフ -->
       <div class="chart-card">
         <h2>❤️ 脈拍グラフ</h2>
+        <div class="axis-controls">
+          <div class="grp">
+            <span class="grp-label">縦軸</span>
+            <button class="ax-btn" onclick="yZoom('pulse','',2)">＋拡大</button>
+            <button class="ax-btn" onclick="yZoom('pulse','',0.5)">－縮小</button>
+            <button class="ax-btn reset" onclick="yReset('pulse')">リセット</button>
+          </div>
+        </div>
         <div class="chart-wrap"><canvas id="chartPulse"></canvas></div>
         <div class="empty" id="emptyPulse">脈拍データがありません</div>
       </div>
     </div>
 
+    <!-- 体重タブ -->
     <div id="tab-wt" style="display:none">
       <div class="card">
         <h2>体重を入力</h2>
@@ -802,23 +720,30 @@ header h1{font-size:1.2rem}
       </div>
       <div class="chart-card">
         <h2>📈 体重グラフ</h2>
-        <div class="zoom-controls">
-          <label>表示範囲：</label>
-          <button class="zoom-btn active" onclick="setZoom('wt',7,this)">7日</button>
-          <button class="zoom-btn" onclick="setZoom('wt',14,this)">14日</button>
-          <button class="zoom-btn" onclick="setZoom('wt',30,this)">30日</button>
-          <button class="zoom-btn" onclick="setZoom('wt',0,this)">全期間</button>
+        <div class="axis-controls">
+          <div class="grp">
+            <span class="grp-label">横軸</span>
+            <button class="ax-btn" onclick="xZoom('wt',2)">＋拡大</button>
+            <button class="ax-btn" onclick="xZoom('wt',0.5)">－縮小</button>
+            <button class="ax-btn reset" onclick="xReset('wt')">リセット</button>
+          </div>
+          <div class="grp">
+            <span class="grp-label">縦軸</span>
+            <button class="ax-btn" onclick="yZoom('wt','',2)">＋拡大</button>
+            <button class="ax-btn" onclick="yZoom('wt','',0.5)">－縮小</button>
+            <button class="ax-btn reset" onclick="yReset('wt')">リセット</button>
+          </div>
         </div>
-        <div class="seek-wrap" id="seekWrapWt" style="display:none">
-          <label>📍 <span id="seekLabelWt"></span></label>
-          <input type="range" class="seek-bar" id="seekWt" min="0" max="100" value="100" oninput="onSeek('wt')">
-          <div class="seek-labels"><span id="seekFromWt"></span><span id="seekToWt"></span></div>
+        <div class="seek-wrap" id="seekWrapWt">
+          <div class="seek-label">📍 <span id="seekLabelWt"></span></div>
+          <input type="range" class="seek-bar" id="seekWt" min="0" max="100" value="100" oninput="onSeek('wt', this.value)">
         </div>
         <div class="chart-wrap"><canvas id="chartWt"></canvas></div>
         <div class="empty" id="emptyWt">まだデータがありません</div>
       </div>
     </div>
 
+    <!-- 履歴タブ -->
     <div id="tab-hist" style="display:none">
       <div class="card">
         <h2>🩸 血圧履歴</h2>
