@@ -32,13 +32,16 @@ let currentUser = null;
 let bpData = [], wtData = [];
 let bpChart = null, pulseChart = null, wtChart = null;
 
-// 表示制御
-let bpView = { days: 7, offsetRatio: 1.0 }; // offsetRatio: 0.0=先頭 1.0=末尾
-let wtView = { days: 7, offsetRatio: 1.0 };
+// 横軸: days=0は全期間。ステップは固定値リスト
+const X_STEPS = [1, 2, 3, 5, 7, 14, 21, 30, 60, 90, 180, 365];
+let bpView = { daysIdx: 4, offsetRatio: 1.0 }; // daysIdx=4 → 7日
+let wtView = { daysIdx: 4, offsetRatio: 1.0 };
+
 // 縦軸制御
-let bpYRange = { sysMax: 200, diaMin: 40 };
+let bpYRange  = { max: 200, min: 40 };
 let pulseYRange = { max: 120, min: 40 };
-let wtYRange = { max: null, min: null }; // nullは自動
+
+function getDays(view) { return X_STEPS[view.daysIdx]; }
 
 onAuthStateChanged(auth, async user => {
   currentUser = user;
@@ -48,9 +51,7 @@ onAuthStateChanged(auth, async user => {
     await loadData();
     document.getElementById('loadingMsg').style.display = 'none';
     renderBpChart();
-  } else {
-    showLogin();
-  }
+  } else { showLogin(); }
 });
 
 function showApp(user) {
@@ -289,118 +290,195 @@ function getRange(data, view) {
   if (!data.length) return {min: null, max: null};
   const sorted = [...data].sort((a,b) => a.time-b.time);
   const first = sorted[0].time.getTime();
-  const last = sorted[sorted.length-1].time.getTime();
-  if (view.days === 0) return {min: new Date(first), max: new Date(last)};
-  const wMs = view.days * 86400000;
-  const span = last - first;
+  const last  = sorted[sorted.length-1].time.getTime();
+  const days  = getDays(view);
+  const wMs   = days * 86400000;
+  const span  = last - first;
   if (span <= wMs) return {min: new Date(first), max: new Date(last)};
-  const offset = view.offsetRatio * Math.max(0, span - wMs);
+  const offset = view.offsetRatio * (span - wMs);
   return {min: new Date(first + offset), max: new Date(first + offset + wMs)};
 }
 
 function canSeek(data, view) {
-  if (!data.length || view.days === 0) return false;
+  if (!data.length) return false;
   const sorted = [...data].sort((a,b) => a.time-b.time);
   const span = sorted[sorted.length-1].time - sorted[0].time;
-  return span > view.days * 86400000;
+  return span > getDays(view) * 86400000;
 }
 
-function updateSeekLabel(type) {
-  const data = type==='bp' ? bpData : wtData;
-  const view = type==='bp' ? bpView : wtView;
-  const k = type==='bp' ? 'Bp' : 'Wt';
-  const range = getRange(data, view);
-  if (range.min) {
+function updateSeekUI(type) {
+  const data  = type==='bp' ? bpData : wtData;
+  const view  = type==='bp' ? bpView : wtView;
+  const k     = type==='bp' ? 'Bp' : 'Wt';
+  const wrap  = document.getElementById('seekWrap'+k);
+  const seekable = canSeek(data, view);
+  wrap.style.display = seekable ? 'block' : 'none';
+  if (seekable) {
+    document.getElementById('seek'+k).value = Math.round(view.offsetRatio * 100);
+    const range = getRange(data, view);
     document.getElementById('seekLabel'+k).textContent = fmtD(range.min)+' ～ '+fmtD(range.max);
   }
-  const seekEl = document.getElementById('seekWrap'+k);
-  seekEl.style.display = canSeek(data, view) ? 'block' : 'none';
-  if (canSeek(data, view)) {
-    document.getElementById('seek'+k).value = Math.round(view.offsetRatio * 100);
-  }
+  // ボタンの有効/無効
+  const days = getDays(view);
+  document.getElementById('xZoomIn'+k).disabled  = view.daysIdx <= 0;
+  document.getElementById('xZoomOut'+k).disabled = view.daysIdx >= X_STEPS.length - 1;
 }
 
 // ===== 横軸操作 =====
-window.xZoom = (type, factor) => {
+window.xZoom = (type, dir) => {
   const view = type==='bp' ? bpView : wtView;
-  if (factor > 1) {
-    // 拡大（期間を縮小）
-    view.days = view.days === 0 ? 30 : Math.max(1, Math.round(view.days / 1.5));
-  } else {
-    // 縮小（期間を拡大）
-    view.days = view.days === 0 ? 0 : Math.min(365, Math.round(view.days * 1.5));
-    if (view.days >= 365) view.days = 0;
-  }
+  const k    = type==='bp' ? 'Bp' : 'Wt';
+  if (dir === 'in')  view.daysIdx = Math.max(0, view.daysIdx - 1);
+  if (dir === 'out') view.daysIdx = Math.min(X_STEPS.length - 1, view.daysIdx + 1);
   if (type==='bp') renderBpChart(); else renderWtChart();
 };
 
 window.xReset = type => {
-  if (type==='bp') { bpView.days=7; bpView.offsetRatio=1.0; renderBpChart(); }
-  else { wtView.days=7; wtView.offsetRatio=1.0; renderWtChart(); }
+  if (type==='bp') { bpView.daysIdx=4; bpView.offsetRatio=1.0; renderBpChart(); }
+  else { wtView.daysIdx=4; wtView.offsetRatio=1.0; renderWtChart(); }
 };
 
 window.onSeek = (type, val) => {
   const view = type==='bp' ? bpView : wtView;
   view.offsetRatio = val / 100;
-  updateSeekLabel(type);
+  updateSeekUI(type);
   if (type==='bp') renderBpChart(); else renderWtChart();
 };
 
 // ===== 縦軸操作 =====
-window.yZoom = (type, axis, factor) => {
+window.yZoom = (type, dir) => {
   if (type==='bp') {
-    if (axis==='sys') bpYRange.sysMax = Math.round(factor>1 ? bpYRange.sysMax/1.2 : bpYRange.sysMax*1.2);
-    if (axis==='dia') bpYRange.diaMin = Math.round(factor>1 ? bpYRange.diaMin*1.2 : bpYRange.diaMin/1.2);
+    const span = bpYRange.max - bpYRange.min;
+    if (dir==='in') {
+      const mid = (bpYRange.max + bpYRange.min) / 2;
+      bpYRange.max = Math.round(mid + span * 0.35);
+      bpYRange.min = Math.round(mid - span * 0.35);
+    } else {
+      const mid = (bpYRange.max + bpYRange.min) / 2;
+      bpYRange.max = Math.round(mid + span * 0.75);
+      bpYRange.min = Math.round(mid - span * 0.75);
+    }
     renderBpChart();
   } else if (type==='pulse') {
-    pulseYRange.max = Math.round(factor>1 ? pulseYRange.max/1.2 : pulseYRange.max*1.2);
-    pulseYRange.min = Math.round(factor>1 ? pulseYRange.min*1.2 : pulseYRange.min/1.2);
+    const span = pulseYRange.max - pulseYRange.min;
+    if (dir==='in') {
+      const mid = (pulseYRange.max + pulseYRange.min) / 2;
+      pulseYRange.max = Math.round(mid + span * 0.35);
+      pulseYRange.min = Math.round(mid - span * 0.35);
+    } else {
+      const mid = (pulseYRange.max + pulseYRange.min) / 2;
+      pulseYRange.max = Math.round(mid + span * 0.75);
+      pulseYRange.min = Math.round(mid - span * 0.75);
+    }
     renderBpChart();
   } else {
-    // 体重
     renderWtChart();
   }
 };
 
 window.yReset = type => {
-  if (type==='bp') { bpYRange={sysMax:200, diaMin:40}; renderBpChart(); }
+  if (type==='bp')    { bpYRange={max:200, min:40}; renderBpChart(); }
   else if (type==='pulse') { pulseYRange={max:120, min:40}; renderBpChart(); }
-  else { wtYRange={max:null, min:null}; renderWtChart(); }
+  else renderWtChart();
 };
 
-// ===== グラフ共通設定 =====
+// ===== グラフ共通X軸 =====
 function timeScaleOptions(min, max) {
   return {
-    type: 'time', min, max,
-    time: { unit: 'hour', stepSize: 1, displayFormats: { hour: 'M/d HH:mm' } },
-    ticks: { font:{size:9}, maxRotation:45, autoSkip:true, maxTicksLimit:10 },
-    grid: { display: false }
+    type: 'time',
+    min, max,
+    time: {
+      unit: 'hour',
+      stepSize: 1,
+      displayFormats: { hour: 'M/d HH:mm', day: 'M/d' }
+    },
+    ticks: {
+      font: {size: 9},
+      maxRotation: 45,
+      autoSkip: true,
+      maxTicksLimit: 10,
+    },
+    grid: { display: false },  // 時間グリッドは非表示
   };
 }
 
+// 1日ごとの縦線をpluginで描画
+function makeDayGridPlugin(getMin, getMax) {
+  return {
+    id: 'dayGrid',
+    afterDraw(chart) {
+      const {ctx, chartArea: {left, right, top, bottom}, scales: {x}} = chart;
+      if (!x) return;
+      const min = getMin();
+      const max = getMax();
+      if (!min || !max) return;
+
+      // min以降の最初の0時から1日ずつ
+      const start = new Date(min);
+      start.setHours(0, 0, 0, 0);
+      if (start < min) start.setDate(start.getDate() + 1);
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(160,174,192,0.25)';
+      ctx.lineWidth = 1;
+      const cur = new Date(start);
+      while (cur <= max) {
+        const px = x.getPixelForValue(cur.getTime());
+        if (px >= left && px <= right) {
+          ctx.beginPath();
+          ctx.moveTo(px, top);
+          ctx.lineTo(px, bottom);
+          ctx.stroke();
+          // 日付ラベル
+          ctx.fillStyle = 'rgba(160,174,192,0.8)';
+          ctx.font = '9px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`${cur.getMonth()+1}/${cur.getDate()}`, px, top - 2);
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+      ctx.restore();
+    }
+  };
+}
+
+let bpRange = {min: null, max: null};
+let wtRange = {min: null, max: null};
+
 function renderBpChart() {
-  const emptyBp = document.getElementById('emptyBp');
+  const emptyBp    = document.getElementById('emptyBp');
   const emptyPulse = document.getElementById('emptyPulse');
   if (!bpData.length) { emptyBp.style.display='block'; emptyPulse.style.display='block'; return; }
   emptyBp.style.display='none';
 
-  updateSeekLabel('bp');
-  const range = getRange(bpData, bpView);
-  const vis = bpData.filter(d => !range.min || (d.time >= range.min && d.time <= range.max)).sort((a,b)=>a.time-b.time);
+  updateSeekUI('bp');
+  bpRange = getRange(bpData, bpView);
+  const {min, max} = bpRange;
+  const vis = bpData.filter(d => !min || (d.time >= min && d.time <= max)).sort((a,b)=>a.time-b.time);
+
+  const dayPlugin = makeDayGridPlugin(() => bpRange.min, () => bpRange.max);
 
   // 血圧グラフ
   const ctxBp = document.getElementById('chartBp').getContext('2d');
   if (bpChart) bpChart.destroy();
   bpChart = new Chart(ctxBp, {
     type: 'scatter',
+    plugins: [dayPlugin],
     data: { datasets: [
       { label:'収縮期（上）', data:vis.map(d=>({x:d.time,y:d.sys})), borderColor:'#fc5c7d', backgroundColor:'#fc5c7d', pointRadius:3, pointHoverRadius:5, showLine:true, tension:0.3, borderWidth:1 },
       { label:'拡張期（下）', data:vis.map(d=>({x:d.time,y:d.dia})), borderColor:'#667eea', backgroundColor:'#667eea', pointRadius:3, pointHoverRadius:5, showLine:true, tension:0.3, borderWidth:1 },
     ]},
     options: {
       responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}} },
-      scales:{ x:timeScaleOptions(range.min,range.max), y:{min:bpYRange.diaMin, max:bpYRange.sysMax, ticks:{font:{size:11}}, title:{display:true,text:'mmHg',font:{size:11}}} }
+      layout: { padding: { top: 14 } },
+      plugins:{
+        legend:{position:'top',labels:{font:{size:11}}},
+        tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}}
+      },
+      scales:{
+        x: timeScaleOptions(min, max),
+        y: {min:bpYRange.min, max:bpYRange.max, ticks:{font:{size:11}}, title:{display:true,text:'mmHg',font:{size:11}}}
+      }
     }
   });
 
@@ -416,13 +494,21 @@ function renderBpChart() {
   if (pulseChart) pulseChart.destroy();
   pulseChart = new Chart(ctxPulse, {
     type: 'scatter',
+    plugins: [dayPlugin],
     data: { datasets: [
       { label:'脈拍', data:pulseVis.map(d=>({x:d.time,y:d.pulse})), borderColor:'#38b2ac', backgroundColor:'#38b2ac', pointRadius:3, pointHoverRadius:5, showLine:true, tension:0.3, borderWidth:1 },
     ]},
     options: {
       responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}} },
-      scales:{ x:timeScaleOptions(range.min,range.max), y:{min:pulseYRange.min, max:pulseYRange.max, ticks:{font:{size:11}}, title:{display:true,text:'bpm',font:{size:11}}} }
+      layout: { padding: { top: 14 } },
+      plugins:{
+        legend:{position:'top',labels:{font:{size:11}}},
+        tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}}
+      },
+      scales:{
+        x: timeScaleOptions(min, max),
+        y: {min:pulseYRange.min, max:pulseYRange.max, ticks:{font:{size:11}}, title:{display:true,text:'bpm',font:{size:11}}}
+      }
     }
   });
 }
@@ -431,20 +517,30 @@ function renderWtChart() {
   const empty = document.getElementById('emptyWt');
   if (!wtData.length) { empty.style.display='block'; return; }
   empty.style.display='none';
-  updateSeekLabel('wt');
-  const range = getRange(wtData, wtView);
-  const vis = wtData.filter(d => !range.min || (d.time >= range.min && d.time <= range.max)).sort((a,b)=>a.time-b.time);
+  updateSeekUI('wt');
+  wtRange = getRange(wtData, wtView);
+  const {min, max} = wtRange;
+  const vis = wtData.filter(d => !min || (d.time >= min && d.time <= max)).sort((a,b)=>a.time-b.time);
+  const dayPlugin = makeDayGridPlugin(() => wtRange.min, () => wtRange.max);
   const ctx = document.getElementById('chartWt').getContext('2d');
   if (wtChart) wtChart.destroy();
   wtChart = new Chart(ctx, {
     type: 'scatter',
+    plugins: [dayPlugin],
     data: { datasets: [
       { label:'体重', data:vis.map(d=>({x:d.time,y:d.kg})), borderColor:'#38b2ac', backgroundColor:'rgba(56,178,172,.15)', pointRadius:3, pointHoverRadius:5, showLine:true, tension:0.3, borderWidth:1, fill:true },
     ]},
     options: {
       responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}} },
-      scales:{ x:timeScaleOptions(range.min,range.max), y:{ticks:{font:{size:11}}, title:{display:true,text:'kg',font:{size:11}}} }
+      layout: { padding: { top: 14 } },
+      plugins:{
+        legend:{position:'top',labels:{font:{size:11}}},
+        tooltip:{callbacks:{title:items=>new Date(items[0].parsed.x).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}}
+      },
+      scales:{
+        x: timeScaleOptions(min, max),
+        y: {ticks:{font:{size:11}}, title:{display:true,text:'kg',font:{size:11}}}
+      }
     }
   });
 }
@@ -562,17 +658,16 @@ header h1{font-size:1.2rem}
 .manual-form .sep{color:#a0aec0;font-size:1.1rem}
 .manual-form .unit{font-size:.75rem;color:#a0aec0}
 .chart-card{background:white;border-radius:16px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:12px}
-.chart-card h2{font-size:.9rem;color:#718096;margin-bottom:8px}
+.chart-card h2{font-size:.9rem;color:#718096;margin-bottom:6px}
 .chart-wrap{position:relative;height:260px}
-/* 軸操作ボタン */
-.axis-controls{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;align-items:center}
-.axis-controls .grp{display:flex;align-items:center;gap:4px;background:#f7fafc;border-radius:8px;padding:4px 8px}
-.axis-controls .grp-label{font-size:.72rem;color:#718096;white-space:nowrap;margin-right:2px}
-.ax-btn{padding:3px 8px;border:1px solid #e2e8f0;border-radius:6px;background:white;color:#667eea;font-size:.78rem;cursor:pointer;font-weight:600;touch-action:manipulation;white-space:nowrap}
+.axis-controls{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;align-items:center}
+.axis-controls .grp{display:flex;align-items:center;gap:3px;background:#f7fafc;border-radius:8px;padding:4px 8px}
+.axis-controls .grp-label{font-size:.7rem;color:#718096;white-space:nowrap;margin-right:2px}
+.ax-btn{padding:4px 10px;border:1px solid #e2e8f0;border-radius:6px;background:white;color:#667eea;font-size:.78rem;cursor:pointer;font-weight:600;touch-action:manipulation;white-space:nowrap}
+.ax-btn:disabled{opacity:.35;cursor:default}
 .ax-btn.reset{color:#a0aec0;font-size:.72rem}
-/* シークバー */
-.seek-wrap{margin-top:8px;display:none}
-.seek-label{font-size:.75rem;color:#718096;margin-bottom:3px}
+.seek-wrap{margin-top:6px;margin-bottom:4px}
+.seek-label{font-size:.72rem;color:#718096;margin-bottom:2px}
 .seek-bar{width:100%;accent-color:#667eea;height:22px}
 .history-list{list-style:none}
 .history-list li{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f0f4f8;font-size:.85rem;gap:8px}
@@ -627,7 +722,6 @@ header h1{font-size:1.2rem}
       <button class="tab" onclick="switchTab('hist')">📋 履歴</button>
     </div>
 
-    <!-- 血圧タブ -->
     <div id="tab-bp">
       <div class="card">
         <h2>血圧・脈拍を入力</h2>
@@ -656,24 +750,23 @@ header h1{font-size:1.2rem}
         </details>
       </div>
 
-      <!-- 血圧グラフ -->
       <div class="chart-card">
         <h2>📈 血圧グラフ</h2>
         <div class="axis-controls">
           <div class="grp">
             <span class="grp-label">横軸</span>
-            <button class="ax-btn" onclick="xZoom('bp',2)">＋拡大</button>
-            <button class="ax-btn" onclick="xZoom('bp',0.5)">－縮小</button>
+            <button class="ax-btn" id="xZoomInBp"  onclick="xZoom('bp','in')">＋拡大</button>
+            <button class="ax-btn" id="xZoomOutBp" onclick="xZoom('bp','out')">－縮小</button>
             <button class="ax-btn reset" onclick="xReset('bp')">リセット</button>
           </div>
           <div class="grp">
             <span class="grp-label">縦軸</span>
-            <button class="ax-btn" onclick="yZoom('bp','sys',2)">＋拡大</button>
-            <button class="ax-btn" onclick="yZoom('bp','sys',0.5)">－縮小</button>
+            <button class="ax-btn" onclick="yZoom('bp','in')">＋拡大</button>
+            <button class="ax-btn" onclick="yZoom('bp','out')">－縮小</button>
             <button class="ax-btn reset" onclick="yReset('bp')">リセット</button>
           </div>
         </div>
-        <div class="seek-wrap" id="seekWrapBp">
+        <div class="seek-wrap" id="seekWrapBp" style="display:none">
           <div class="seek-label">📍 <span id="seekLabelBp"></span></div>
           <input type="range" class="seek-bar" id="seekBp" min="0" max="100" value="100" oninput="onSeek('bp', this.value)">
         </div>
@@ -681,14 +774,13 @@ header h1{font-size:1.2rem}
         <div class="empty" id="emptyBp">まだデータがありません</div>
       </div>
 
-      <!-- 脈拍グラフ -->
       <div class="chart-card">
         <h2>❤️ 脈拍グラフ</h2>
         <div class="axis-controls">
           <div class="grp">
             <span class="grp-label">縦軸</span>
-            <button class="ax-btn" onclick="yZoom('pulse','',2)">＋拡大</button>
-            <button class="ax-btn" onclick="yZoom('pulse','',0.5)">－縮小</button>
+            <button class="ax-btn" onclick="yZoom('pulse','in')">＋拡大</button>
+            <button class="ax-btn" onclick="yZoom('pulse','out')">－縮小</button>
             <button class="ax-btn reset" onclick="yReset('pulse')">リセット</button>
           </div>
         </div>
@@ -697,7 +789,6 @@ header h1{font-size:1.2rem}
       </div>
     </div>
 
-    <!-- 体重タブ -->
     <div id="tab-wt" style="display:none">
       <div class="card">
         <h2>体重を入力</h2>
@@ -723,18 +814,18 @@ header h1{font-size:1.2rem}
         <div class="axis-controls">
           <div class="grp">
             <span class="grp-label">横軸</span>
-            <button class="ax-btn" onclick="xZoom('wt',2)">＋拡大</button>
-            <button class="ax-btn" onclick="xZoom('wt',0.5)">－縮小</button>
+            <button class="ax-btn" id="xZoomInWt"  onclick="xZoom('wt','in')">＋拡大</button>
+            <button class="ax-btn" id="xZoomOutWt" onclick="xZoom('wt','out')">－縮小</button>
             <button class="ax-btn reset" onclick="xReset('wt')">リセット</button>
           </div>
           <div class="grp">
             <span class="grp-label">縦軸</span>
-            <button class="ax-btn" onclick="yZoom('wt','',2)">＋拡大</button>
-            <button class="ax-btn" onclick="yZoom('wt','',0.5)">－縮小</button>
+            <button class="ax-btn" onclick="yZoom('wt','in')">＋拡大</button>
+            <button class="ax-btn" onclick="yZoom('wt','out')">－縮小</button>
             <button class="ax-btn reset" onclick="yReset('wt')">リセット</button>
           </div>
         </div>
-        <div class="seek-wrap" id="seekWrapWt">
+        <div class="seek-wrap" id="seekWrapWt" style="display:none">
           <div class="seek-label">📍 <span id="seekLabelWt"></span></div>
           <input type="range" class="seek-bar" id="seekWt" min="0" max="100" value="100" oninput="onSeek('wt', this.value)">
         </div>
@@ -743,7 +834,6 @@ header h1{font-size:1.2rem}
       </div>
     </div>
 
-    <!-- 履歴タブ -->
     <div id="tab-hist" style="display:none">
       <div class="card">
         <h2>🩸 血圧履歴</h2>
